@@ -10,8 +10,8 @@ it pairs the watches and runs their voice through an Assist pipeline you choose.
 The watch app: [garmin-wristtalk](https://github.com/grzegorz-krzyzak/garmin-wristtalk) - not in
 the Connect IQ store yet.
 
-Independent personal project, not affiliated with or endorsed by the Open Home Foundation, Home
-Assistant or Garmin.
+**A personal, non-commercial hobby project by a private individual.** Not affiliated with or endorsed by
+the Open Home Foundation, Home Assistant or Garmin.
 
 ## Requirements
 
