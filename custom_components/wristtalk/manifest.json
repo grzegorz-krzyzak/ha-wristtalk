@@ -1,0 +1,22 @@
+{
+  "domain": "wristtalk",
+  "name": "WristTalk",
+  "codeowners": [
+    "@grzegorz-krzyzak"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "assist_pipeline",
+    "assist_satellite",
+    "ffmpeg",
+    "http",
+    "tts"
+  ],
+  "documentation": "https://github.com/grzegorz-krzyzak/ha-wristtalk",
+  "integration_type": "hub",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/grzegorz-krzyzak/ha-wristtalk/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

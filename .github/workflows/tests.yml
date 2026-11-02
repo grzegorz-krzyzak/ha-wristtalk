@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: System packages
+        # ffmpeg decodes the watch's Ogg/Opus (as in Home Assistant); build tools for Assist's audio libraries
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg build-essential
+      - name: Python packages
+        # pytest-homeassistant-custom-component pins Home Assistant (0.13.375 = 2026.10.4); the rest are
+        # requirements of conversation / assist_pipeline / ffmpeg, here with the real audio libraries
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest-homeassistant-custom-component==0.13.375 \
+            hassil==3.12.1 home-assistant-intents==2026.10.6 gazetteer-matcher==1.1.0 mutagen==1.48.1 \
+            pymicro-vad==1.0.1 pyspeex-noise==1.0.2 ha-ffmpeg==3.2.2
+      - name: Real audio libraries present
+        run: python -c "import pymicro_vad, pyspeex_noise; print('audio libraries ok')"
+      - name: pytest
+        run: python -m pytest -q --cov=custom_components.wristtalk --cov-report=term-missing

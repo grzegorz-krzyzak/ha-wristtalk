@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "WristTalk",
+        "description": "Voice assistant for Home Assistant on a Garmin watch.",
+        "data": {
+          "pipeline": "Default pipeline for new watches",
+          "url": "Address for the watches"
+        },
+        "data_description": {
+          "pipeline": "The Assist pipeline a new watch uses; each watch can pick its own in its device card.",
+          "url": "The watch reaches Home Assistant through the phone, which needs HTTPS with a trusted certificate (e.g. Home Assistant Cloud). Plain http:// does not work, also at home."
+        }
+      }
+    },
+    "error": {
+      "https_required": "The address must start with https://"
+    },
+    "abort": {
+      "single_instance_allowed": "WristTalk is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "WristTalk",
+        "data": {
+          "pipeline": "Default pipeline for new watches",
+          "url": "Address for the watches"
+        },
+        "data_description": {
+          "url": "A changed address must reach the watches: paste it in the WristTalk settings in Garmin Connect, or pair the watch again."
+        }
+      }
+    },
+    "error": {
+      "https_required": "The address must start with https://"
+    }
+  },
+  "config_subentries": {
+    "watch": {
+      "entry_type": "Watch",
+      "initiate_flow": {
+        "user": "Add watch"
+      },
+      "step": {
+        "confirm": {
+          "title": "Confirm the watch",
+          "description": "The {model} watch shows the code **{code}**.\n\nConfirm if the code on the watch is the same."
+        }
+      },
+      "progress": {
+        "wait_watch": "Open WristTalk on the watch.\n\nIn the app settings in Garmin Connect, set the house address to:\n\n**{url}**\n\nPairing stays open for 5 minutes."
+      },
+      "abort": {
+        "timeout": "No watch asked to pair within 5 minutes. Start \"Add watch\" again."
+      }
+    }
+  },
+  "entity": {
+    "select": {
+      "pipeline": {
+        "name": "Assistant",
+        "state": {
+          "preferred": "Preferred"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Finished speaking detection",
+        "state": {
+          "default": "Default",
+          "relaxed": "Relaxed",
+          "aggressive": "Aggressive"
+        }
+      }
+    }
+  }
+}

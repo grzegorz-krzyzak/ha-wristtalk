@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "WristTalk",
+        "description": "Asystent głosowy Home Assistant na zegarku Garmin.",
+        "data": {
+          "pipeline": "Domyślny potok dla nowych zegarków",
+          "url": "Adres dla zegarków"
+        },
+        "data_description": {
+          "pipeline": "Potok Assista, którego używa nowy zegarek; każdy zegarek może wybrać własny w swojej karcie urządzenia.",
+          "url": "Zegarek łączy się z Home Assistant przez telefon, a ten wymaga HTTPS z zaufanym certyfikatem (np. Home Assistant Cloud). Zwykłe http:// nie działa, także w domu."
+        }
+      }
+    },
+    "error": {
+      "https_required": "Adres musi zaczynać się od https://"
+    },
+    "abort": {
+      "single_instance_allowed": "WristTalk jest już skonfigurowany."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "WristTalk",
+        "data": {
+          "pipeline": "Domyślny potok dla nowych zegarków",
+          "url": "Adres dla zegarków"
+        },
+        "data_description": {
+          "url": "Nowy adres musi trafić do zegarków: wklej go w ustawieniach WristTalk w Garmin Connect albo sparuj zegarek ponownie."
+        }
+      }
+    },
+    "error": {
+      "https_required": "Adres musi zaczynać się od https://"
+    }
+  },
+  "config_subentries": {
+    "watch": {
+      "entry_type": "Zegarek",
+      "initiate_flow": {
+        "user": "Dodaj zegarek"
+      },
+      "step": {
+        "confirm": {
+          "title": "Potwierdź zegarek",
+          "description": "Zegarek {model} pokazuje kod **{code}**.\n\nPotwierdź, jeżeli kod na zegarku jest identyczny."
+        }
+      },
+      "progress": {
+        "wait_watch": "Otwórz WristTalk na zegarku.\n\nW ustawieniach aplikacji w Garmin Connect wpisz adres domu:\n\n**{url}**\n\nParowanie jest otwarte przez 5 minut."
+      },
+      "abort": {
+        "timeout": "Żaden zegarek nie zgłosił się w ciągu 5 minut. Uruchom „Dodaj zegarek” ponownie."
+      }
+    }
+  },
+  "entity": {
+    "select": {
+      "pipeline": {
+        "name": "Asystent",
+        "state": {
+          "preferred": "Preferowany"
+        }
+      },
+      "vad_sensitivity": {
+        "name": "Wykrywanie końca mowy",
+        "state": {
+          "default": "Domyślne",
+          "relaxed": "Swobodne",
+          "aggressive": "Agresywne"
+        }
+      }
+    }
+  }
+}
