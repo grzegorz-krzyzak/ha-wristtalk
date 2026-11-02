@@ -38,7 +38,8 @@ Assistant.
 4. Compare the code on the watch with the one Home Assistant shows and confirm.
 
 Each watch becomes its own device with its own key. Deleting the watch in Home Assistant revokes its
-key at once.
+key at once. It blocks the watch's further commands; it does not undo an action its current
+command has already started.
 
 ## Replies on the watch
 
