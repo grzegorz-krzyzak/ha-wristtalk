@@ -12,10 +12,11 @@ import pytest
 
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.util import dt as dt_util
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.wristtalk.const import SUBENTRY_WATCH, WATCH_KEY_HASH, WATCH_MODEL
+from custom_components.wristtalk.const import PAIRING_WINDOW, SUBENTRY_WATCH, WATCH_KEY_HASH, WATCH_MODEL
 from custom_components.wristtalk.pairing import hash_key
 
 HEADERS = {"X-WT-Protocol": "1", "X-WT-App": "0.1.0"}
@@ -63,12 +64,17 @@ async def test_add_watch_end_to_end(hass: HomeAssistant, entry, hass_client_no_a
     result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
-    # The watch collects its key once
+    # The watch collects its key - again, if the first reply got lost on the way
     poll = await client.post(f"/api/wristtalk/v1/pair/{pairing['pair_id']}", headers=HEADERS)
     paired = await poll.json()
     assert paired["state"] == "paired"
     key = paired["key"]
     poll = await client.post(f"/api/wristtalk/v1/pair/{pairing['pair_id']}", headers=HEADERS)
+    assert await poll.json() == {"state": "paired", "key": key, "protocol": 1}
+    # ... but not after the window
+    later = dt_util.utcnow() + PAIRING_WINDOW * 2
+    with patch("custom_components.wristtalk.pairing.dt_util.utcnow", return_value=later):
+        poll = await client.post(f"/api/wristtalk/v1/pair/{pairing['pair_id']}", headers=HEADERS)
     assert poll.status == 410
 
     # Home Assistant keeps only the hash

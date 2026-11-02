@@ -44,8 +44,9 @@ def _error(code: str, status: int) -> web.Response:
 def _protocol_error(request: web.Request) -> web.Response | None:
     """HTTP 426 when the app is too old, 501 when the integration is.
 
-    Two status codes, not one with two error texts: Connect IQ hands the app no body for a status
-    other than 200 (measured in the simulator).
+    Two status codes, not one with two error texts: Connect IQ may hand the app no body for a
+    status other than 200 (measured in the simulator for the chunk requests, which have a binary
+    body; a JSON request got its 401 body).
     """
     try:
         version = int(request.headers.get(HEADER_PROTOCOL, ""))
@@ -147,6 +148,13 @@ class PingView(HomeAssistantView):
         return _reply({"ok": True})
 
 
+def _answer(hass: HomeAssistant, request: web.Request, response: web.Response) -> web.Response:
+    """A request that waited may outlive its watch (removed meanwhile): then 401, re-pair."""
+    if authenticated_watch(hass, request) is None:
+        return _error("unauthorized", HTTPStatus.UNAUTHORIZED)
+    return response
+
+
 def _watch_context(hass: HomeAssistant, request: web.Request):
     """(runtime data, watch subentry) of an authenticated request, or an error response."""
     if (error := _protocol_error(request)) is not None:
@@ -185,9 +193,10 @@ class CommandView(HomeAssistantView):
                 text_only=request.headers.get(HEADER_TEXT_ONLY) == "1",
             )
             await session.feed(position, body, final=request.headers.get(HEADER_FINAL) == "1")
-            return _reply(await session.chunk_reply())
+            response = _reply(await session.chunk_reply())
         except SessionError as err:
-            return _error(err.code, err.status)
+            response = _error(err.code, err.status)
+        return _answer(hass, request, response)
 
 
 class ReplyView(HomeAssistantView):
@@ -203,9 +212,10 @@ class ReplyView(HomeAssistantView):
         if error is not None:
             return error
         try:
-            return _reply(await data.sessions.get(watch.subentry_id, session_id).reply_result())
+            response = _reply(await data.sessions.get(watch.subentry_id, session_id).reply_result())
         except SessionError as err:
-            return _error(err.code, err.status)
+            response = _error(err.code, err.status)
+        return _answer(hass, request, response)
 
 
 class AudioView(HomeAssistantView):
@@ -223,8 +233,8 @@ class AudioView(HomeAssistantView):
         try:
             audio = await data.sessions.get(watch.subentry_id, session_id).audio()
         except SessionError as err:
-            return _error(err.code, err.status)
-        return web.Response(body=audio, content_type="application/octet-stream")
+            return _answer(hass, request, _error(err.code, err.status))
+        return _answer(hass, request, web.Response(body=audio, content_type="application/octet-stream"))
 
 
 def async_register_views(hass: HomeAssistant) -> None:

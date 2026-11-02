@@ -6,9 +6,9 @@ Voice assistant for Home Assistant on a Garmin watch: open the WristTalk app, sa
 and the reply, hear the reply from the watch speaker. This integration is the Home Assistant side:
 it pairs the watches and runs their voice through an Assist pipeline you choose.
 
-**Status: in development**, not released yet. The watch app:
-[garmin-wristtalk](https://github.com/grzegorz-krzyzak/garmin-wristtalk) (published together with
-the first release).
+**Status: first release (0.1.0), tested in the Connect IQ simulator against a real Home Assistant.**
+The watch app: [garmin-wristtalk](https://github.com/grzegorz-krzyzak/garmin-wristtalk) - not in
+the Connect IQ store yet.
 
 Independent personal project, not affiliated with or endorsed by the Open Home Foundation, Home
 Assistant or Garmin.
@@ -19,6 +19,15 @@ Assistant or Garmin.
 - An **HTTPS** address with a trusted certificate (for example Home Assistant Cloud). The watch
   reaches Home Assistant through the phone, and iOS refuses plain `http://` - also at home.
 - A Garmin watch with Connect IQ API 6.0.3 (microphone and speaker for apps), e.g. fēnix 8.
+
+## Installation
+
+With [HACS](https://hacs.xyz): HACS -> the three dots -> **Custom repositories**, add
+`https://github.com/grzegorz-krzyzak/ha-wristtalk` as an **Integration**, then install WristTalk and
+restart Home Assistant.
+
+By hand: copy `custom_components/wristtalk` into your `config/custom_components/` and restart Home
+Assistant.
 
 ## Setup
 

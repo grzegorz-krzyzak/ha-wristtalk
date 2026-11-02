@@ -96,7 +96,11 @@ class FakePipeline:
             return
         event_callback(PipelineEvent(PipelineEventType.STT_END, {"stt_output": {"text": self.heard}}))
         if self.hold_reply is not None:
-            await self.hold_reply.wait()
+            try:
+                await self.hold_reply.wait()
+            except asyncio.CancelledError:
+                run["cancelled"] = True  # the agent never acted
+                raise
         event_callback(
             PipelineEvent(
                 PipelineEventType.INTENT_END,
@@ -481,3 +485,60 @@ async def test_synthesis_failure_leaves_the_text(hass: HomeAssistant, watch, pip
         assert (await reply.json())["reply"] == "Jest 21:37."
         audio = await watch["client"].get("/api/wristtalk/v1/audio/s1", headers=watch["headers"])
     assert audio.status == 404
+
+
+# --- a watch removed in Home Assistant (its key revoked) at each stage of a command ---------------
+
+
+async def _remove_watch(hass: HomeAssistant, entry) -> None:
+    (subentry_id,) = entry.subentries
+    hass.config_entries.async_remove_subentry(entry, subentry_id)
+    await hass.async_block_till_done()
+
+
+async def test_removed_while_listening(hass: HomeAssistant, entry, watch, pipeline) -> None:
+    assert (await _chunk(watch, "s1", 0, b"abc"))[0] == 200
+    await _remove_watch(hass, entry)
+    assert await _chunk(watch, "s1", 3, b"def") == (401, {"error": "unauthorized", "protocol": 1})
+
+
+async def test_removed_while_the_agent_thinks(hass: HomeAssistant, entry, watch, pipeline) -> None:
+    # The command is heard and with the agent: removing the watch must stop it before it acts
+    pipeline.hold_reply = asyncio.Event()
+    assert (await _chunk(watch, "s1", 0, END))[1]["state"] == "heard"
+    await _remove_watch(hass, entry)
+    assert pipeline.runs[0].get("cancelled") is True
+    reply = await watch["client"].post("/api/wristtalk/v1/reply/s1", headers=watch["headers"])
+    assert reply.status == 401
+
+
+async def test_removed_before_the_audio(hass: HomeAssistant, entry, watch, pipeline) -> None:
+    await _chunk(watch, "s1", 0, END)
+    reply = await watch["client"].post("/api/wristtalk/v1/reply/s1", headers=watch["headers"])
+    assert (await reply.json())["reply"] == "Jest 21:37."
+    await _remove_watch(hass, entry)
+    audio = await watch["client"].get("/api/wristtalk/v1/audio/s1", headers=watch["headers"])
+    assert audio.status == 401
+
+
+async def test_removed_then_the_next_command(hass: HomeAssistant, entry, watch, pipeline) -> None:
+    await _remove_watch(hass, entry)
+    ping = await watch["client"].post("/api/wristtalk/v1/ping", headers=watch["headers"])
+    assert ping.status == 401
+    assert (await _chunk(watch, "s2", 0, b"a"))[0] == 401
+    assert pipeline.runs == []
+
+
+async def test_removed_while_recognising(hass: HomeAssistant, entry, watch, pipeline) -> None:
+    # START sent the end of the command; STT still runs - the command never reaches the agent
+    pipeline.hold_stt = asyncio.Event()
+    request = asyncio.ensure_future(_chunk(watch, "s1", 0, END, **{"X-WT-Final": "1"}))
+    await asyncio.sleep(0.05)
+    await _remove_watch(hass, entry)
+    pipeline.hold_stt.set()
+    await hass.async_block_till_done()
+    # Answered at once (not after the STT wait), with what makes the watch pair again
+    assert await request == (401, {"error": "unauthorized", "protocol": 1})
+    assert pipeline.synthesized == []
+    reply = await watch["client"].post("/api/wristtalk/v1/reply/s1", headers=watch["headers"])
+    assert reply.status == 401

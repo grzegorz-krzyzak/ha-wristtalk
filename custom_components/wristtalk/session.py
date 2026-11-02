@@ -269,6 +269,9 @@ class CommandSession:
         return data
 
     async def close(self) -> None:
+        # Requests still waiting (a long poll, a chunk waiting for STT) answer now, not at their timeout
+        if not self.finished:
+            self._fail("closed")
         if self._cap_handle is not None:
             self._cap_handle.cancel()
         await self.close_input()

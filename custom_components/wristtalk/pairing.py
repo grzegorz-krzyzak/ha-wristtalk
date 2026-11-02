@@ -50,7 +50,7 @@ class WatchRequest:
     model: str
     app_version: str
     requested_at: datetime = field(default_factory=dt_util.utcnow)
-    key: str | None = None  # set on confirm, handed to the watch once
+    key: str | None = None  # set on confirm, handed to the watch until the window's end
 
 
 class PairingWindow:
@@ -63,7 +63,7 @@ class PairingWindow:
         self._calls = 0
         self._request: WatchRequest | None = None
         self._requested: asyncio.Event = asyncio.Event()
-        # The key waits here for the watch's poll after the flow has finished
+        # The key waits here for the watch's polls after the flow has finished
         self._collected: dict[str, WatchRequest] = {}
 
     @property
@@ -139,9 +139,14 @@ class PairingWindow:
 
     def poll(self, pair_id: str) -> dict[str, Any]:
         """The watch polls its pairing (POST pair/<pair_id>)."""
-        if (collected := self._collected.pop(pair_id, None)) is not None:
-            if dt_util.utcnow() - collected.requested_at < PAIRING_WINDOW * 2:
-                return {"state": "paired", "key": collected.key}
+        # The same key again while the window lasts: a reply lost on the way (Bluetooth, the phone)
+        # must not leave a watch Home Assistant has added without its key. pair_id is a secret
+        # only that watch has.
+        now = dt_util.utcnow()
+        for old in [p for p, r in self._collected.items() if now - r.requested_at >= PAIRING_WINDOW * 2]:
+            del self._collected[old]
+        if (collected := self._collected.get(pair_id)) is not None:
+            return {"state": "paired", "key": collected.key}
         if self.is_open and self._request is not None and self._request.pair_id == pair_id:
             return {"state": "pending"}
         raise PairingError("expired", 410)
