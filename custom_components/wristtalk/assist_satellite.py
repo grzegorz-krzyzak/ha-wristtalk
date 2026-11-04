@@ -15,6 +15,7 @@ from homeassistant.components.assist_satellite import (
     AssistSatelliteEntity,
     AssistSatelliteEntityFeature,
 )
+from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -22,6 +23,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import WristTalkConfigEntry
 from .const import DOMAIN
+from .decoder import async_compress_speech
 from .entity import WatchEntity
 from .select import entity_prefix
 
@@ -118,4 +120,7 @@ class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
             options[tts.ATTR_VOICE] = pipeline.tts_voice
         stream = tts.async_create_stream(self.hass, pipeline.tts_engine, pipeline.tts_language, options)
         stream.async_set_message(text)
-        return b"".join([chunk async for chunk in stream.async_stream_result()])
+        audio = b"".join([chunk async for chunk in stream.async_stream_result()])
+        # Home Assistant's own bitrate option is for MP3 only; the reply goes to the watch through
+        # the phone at about 13 kB/s (measured on a fēnix 8, 2026-11-04 - a status reply was 114 kB)
+        return await async_compress_speech(get_ffmpeg_manager(self.hass).binary, audio)

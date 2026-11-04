@@ -18,7 +18,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from custom_components.wristtalk import CONF_USER_ID
 from custom_components.wristtalk.const import CONF_PIPELINE, DOMAIN
-from custom_components.wristtalk.decoder import FfmpegDecoder
+from custom_components.wristtalk.decoder import FfmpegDecoder, async_compress_speech
 
 from .test_pairing import HEADERS, WATCH, _confirm, _pair, _start_add_watch
 
@@ -542,3 +542,23 @@ async def test_removed_while_recognising(hass: HomeAssistant, entry, watch, pipe
     assert pipeline.synthesized == []
     reply = await watch["client"].post("/api/wristtalk/v1/reply/s1", headers=watch["headers"])
     assert reply.status == 401
+
+
+async def test_reply_audio_stays_as_it_came_when_ffmpeg_cannot_compress_it() -> None:
+    """No ffmpeg, or audio it cannot read: the watch still gets the reply's voice."""
+    assert await async_compress_speech("/nonexistent/ffmpeg", REPLY_AUDIO) == REPLY_AUDIO
+    if shutil.which("ffmpeg"):
+        assert await async_compress_speech("ffmpeg", b"not ogg") == b"not ogg"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed (runs in CI)")
+async def test_reply_audio_is_compressed_to_speech_bitrate() -> None:
+    """A reply as a TTS engine gives it (Ogg/Opus at a music bitrate) -> Ogg/Opus 16 kbit/s, smaller."""
+    ogg = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+         "-ar", "48000", "-ac", "1", "-c:a", "libopus", "-b:a", "96k", "-f", "ogg", "pipe:1"],
+        check=True, capture_output=True,
+    ).stdout
+    compressed = await async_compress_speech("ffmpeg", ogg)
+    assert compressed.startswith(b"OggS")
+    assert len(compressed) < len(ogg) / 3

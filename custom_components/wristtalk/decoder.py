@@ -91,6 +91,24 @@ class FfmpegDecoder:
         await self._process.wait()
 
 
+SPEECH_BITRATE = "16k"
+
+
+async def async_compress_speech(binary: str, audio: bytes) -> bytes:
+    """The reply audio as Opus at speech bitrate (Ogg), or as it came if ffmpeg cannot."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            binary, "-hide_banner", "-loglevel", "error", "-f", "ogg", "-i", "pipe:0",
+            "-c:a", "libopus", "-b:a", SPEECH_BITRATE, "-application", "voip", "-ar", "16000", "-ac", "1",
+            "-f", "ogg", "pipe:1",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await process.communicate(audio)
+    except OSError:
+        return audio
+    return out if process.returncode == 0 and out else audio
+
+
 def create_decoder(hass: HomeAssistant) -> Decoder:
     """A decoder using the ffmpeg binary Home Assistant is configured with."""
     return FfmpegDecoder(get_ffmpeg_manager(hass).binary)
