@@ -6,7 +6,7 @@ Voice assistant for Home Assistant on a Garmin watch: open the WristTalk app, sa
 and the reply, hear the reply from the watch speaker. This integration is the Home Assistant side:
 it pairs the watches and runs their voice through an Assist pipeline you choose.
 
-**Status: 0.1.1, tested in the Connect IQ simulator and on a fēnix 8 Solar 51 mm against a real Home Assistant.**
+**Status: 0.1.2, tested in the Connect IQ simulator and on a fēnix 8 Solar 51 mm against a real Home Assistant.**
 The watch app: [garmin-wristtalk](https://github.com/grzegorz-krzyzak/garmin-wristtalk) - not in
 the Connect IQ store yet.
 
@@ -47,6 +47,10 @@ WristTalk adds nothing to what your agent is told - like Home Assistant Voice PE
 extra instruction with a normal command. The reply style is your agent's: if you want shorter
 replies on the watch, put it in the agent's prompt or pick a separate pipeline for the watch.
 
+Each watch's device card has its settings: the **Assistant** (pipeline), **Finished speaking
+detection** and **Reply voice quality** - *Fast* (the default: smaller, arrives sooner through
+the phone), *Balanced* or *Best* (larger; worth it with headphones).
+
 Home Assistant's `extra_system_prompt` mechanism could carry a watch-specific instruction (e.g.
 "answer shorter"), but WristTalk does not use it - we do not know how it would work with your agent
 or how it would affect it.
@@ -60,6 +64,8 @@ uv venv -p 3.14 .venv
 uv pip install -p .venv/bin/python pytest-homeassistant-custom-component==0.13.375  # HA 2026.10.4
 uv pip install -p .venv/bin/python hassil home-assistant-intents gazetteer-matcher mutagen ha-ffmpeg
 .venv/bin/python -m pytest -q --cov=custom_components.wristtalk
+uv pip install -p .venv/bin/python ruff  # lint and format, checked in CI as well
+.venv/bin/ruff check custom_components tests && .venv/bin/ruff format --check custom_components tests
 ```
 
 Assist's audio libraries (`pymicro-vad`, `pyspeex-noise`) have no wheels for Python 3.14 on macOS;

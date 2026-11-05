@@ -50,7 +50,8 @@ def _domain_data(hass: HomeAssistant) -> DomainData:
     if DOMAIN not in hass.data:
         hass.data[DOMAIN] = DomainData(
             pairing=PairingWindow(hass),
-            sessions=SessionManager(hass, lambda h: create_decoder(h)),
+            # Looked up at each command, so a test can patch create_decoder
+            sessions=SessionManager(hass, lambda h: create_decoder(h)),  # noqa: PLW0108
         )
     return hass.data[DOMAIN]
 
@@ -58,10 +59,16 @@ def _domain_data(hass: HomeAssistant) -> DomainData:
 async def _system_user_id(hass: HomeAssistant, entry: WristTalkConfigEntry) -> str:
     """Commands run as the system user "WristTalk" - it shows where a command came from; it
     restricts nothing."""
-    if (user_id := entry.data.get(CONF_USER_ID)) and await hass.auth.async_get_user(user_id):
+    if (user_id := entry.data.get(CONF_USER_ID)) and await hass.auth.async_get_user(
+        user_id
+    ):
         return user_id
-    user = await hass.auth.async_create_system_user(SYSTEM_USER_NAME, group_ids=[GROUP_ID_USER])
-    hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_USER_ID: user.id})
+    user = await hass.auth.async_create_system_user(
+        SYSTEM_USER_NAME, group_ids=[GROUP_ID_USER]
+    )
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_USER_ID: user.id}
+    )
     return user.id
 
 
@@ -92,6 +99,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: WristTalkConfigEntry) -
 
 async def async_remove_entry(hass: HomeAssistant, entry: WristTalkConfigEntry) -> None:
     """Removing the integration removes its system user too."""
-    if (user_id := entry.data.get(CONF_USER_ID)) and (user := await hass.auth.async_get_user(user_id)):
+    if (user_id := entry.data.get(CONF_USER_ID)) and (
+        user := await hass.auth.async_get_user(user_id)
+    ):
         await hass.auth.async_remove_user(user)
     hass.data.pop(DOMAIN, None)

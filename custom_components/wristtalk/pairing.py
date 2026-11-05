@@ -143,10 +143,18 @@ class PairingWindow:
         # must not leave a watch Home Assistant has added without its key. pair_id is a secret
         # only that watch has.
         now = dt_util.utcnow()
-        for old in [p for p, r in self._collected.items() if now - r.requested_at >= PAIRING_WINDOW * 2]:
+        for old in [
+            p
+            for p, r in self._collected.items()
+            if now - r.requested_at >= PAIRING_WINDOW * 2
+        ]:
             del self._collected[old]
         if (collected := self._collected.get(pair_id)) is not None:
             return {"state": "paired", "key": collected.key}
-        if self.is_open and self._request is not None and self._request.pair_id == pair_id:
+        if (
+            self.is_open
+            and self._request is not None
+            and self._request.pair_id == pair_id
+        ):
             return {"state": "pending"}
         raise PairingError("expired", 410)

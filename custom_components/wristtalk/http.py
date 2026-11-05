@@ -7,7 +7,6 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
-
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.core import HomeAssistant
@@ -69,7 +68,9 @@ def _data(hass: HomeAssistant) -> WristTalkData | None:
     return entry.runtime_data if entry is not None else None
 
 
-def authenticated_watch(hass: HomeAssistant, request: web.Request) -> ConfigSubentry | None:
+def authenticated_watch(
+    hass: HomeAssistant, request: web.Request
+) -> ConfigSubentry | None:
     """The watch whose key the request carries, or None."""
     key = request.headers.get(HEADER_KEY, "")
     entry = _entry(hass)
@@ -148,7 +149,9 @@ class PingView(HomeAssistantView):
         return _reply({"ok": True})
 
 
-def _answer(hass: HomeAssistant, request: web.Request, response: web.Response) -> web.Response:
+def _answer(
+    hass: HomeAssistant, request: web.Request, response: web.Response
+) -> web.Response:
     """A request that waited may outlive its watch (removed meanwhile): then 401, re-pair."""
     if authenticated_watch(hass, request) is None:
         return _error("unauthorized", HTTPStatus.UNAUTHORIZED)
@@ -173,7 +176,9 @@ class CommandView(HomeAssistantView):
     name = "api:wristtalk:command"
     requires_auth = False
 
-    async def post(self, request: web.Request, session_id: str, offset: str) -> web.Response:
+    async def post(
+        self, request: web.Request, session_id: str, offset: str
+    ) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
         data, watch, error = _watch_context(hass, request)
         if error is not None:
@@ -192,7 +197,9 @@ class CommandView(HomeAssistantView):
                 satellite,
                 text_only=request.headers.get(HEADER_TEXT_ONLY) == "1",
             )
-            await session.feed(position, body, final=request.headers.get(HEADER_FINAL) == "1")
+            await session.feed(
+                position, body, final=request.headers.get(HEADER_FINAL) == "1"
+            )
             response = _reply(await session.chunk_reply())
         except SessionError as err:
             response = _error(err.code, err.status)
@@ -212,7 +219,9 @@ class ReplyView(HomeAssistantView):
         if error is not None:
             return error
         try:
-            response = _reply(await data.sessions.get(watch.subentry_id, session_id).reply_result())
+            response = _reply(
+                await data.sessions.get(watch.subentry_id, session_id).reply_result()
+            )
         except SessionError as err:
             response = _error(err.code, err.status)
         return _answer(hass, request, response)
@@ -234,7 +243,11 @@ class AudioView(HomeAssistantView):
             audio = await data.sessions.get(watch.subentry_id, session_id).audio()
         except SessionError as err:
             return _answer(hass, request, _error(err.code, err.status))
-        return _answer(hass, request, web.Response(body=audio, content_type="application/octet-stream"))
+        return _answer(
+            hass,
+            request,
+            web.Response(body=audio, content_type="application/octet-stream"),
+        )
 
 
 def async_register_views(hass: HomeAssistant) -> None:
@@ -242,5 +255,12 @@ def async_register_views(hass: HomeAssistant) -> None:
     if hass.data.get(f"{DOMAIN}_views"):
         return
     hass.data[f"{DOMAIN}_views"] = True
-    for view in (PairView(), PairPollView(), PingView(), CommandView(), ReplyView(), AudioView()):
+    for view in (
+        PairView(),
+        PairPollView(),
+        PingView(),
+        CommandView(),
+        ReplyView(),
+        AudioView(),
+    ):
         hass.http.register_view(view)

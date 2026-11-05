@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
-
-import voluptuous as vol
 
 from homeassistant.components.assist_pipeline import async_get_pipelines
 from homeassistant.components.assist_pipeline.pipeline import async_get_pipeline
@@ -26,6 +25,7 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 from homeassistant.util import dt as dt_util
+import voluptuous as vol
 
 from .const import (
     CONF_PIPELINE,
@@ -60,7 +60,11 @@ def _known_urls(hass: HomeAssistant) -> list[str]:
     for kwargs in (
         {"allow_internal": False, "allow_cloud": False},  # external
         {"allow_external": False, "allow_cloud": False},  # internal
-        {"allow_internal": False, "allow_external": False, "require_cloud": True},  # cloud
+        {
+            "allow_internal": False,
+            "allow_external": False,
+            "require_cloud": True,
+        },  # cloud
     ):
         try:
             url = get_url(hass, require_ssl=True, **kwargs)
@@ -80,7 +84,9 @@ def _schema(hass: HomeAssistant, pipeline: str | None, url: str | None) -> vol.S
                     options=_pipeline_options(hass), mode=SelectSelectorMode.DROPDOWN
                 )
             ),
-            vol.Required(CONF_URL, default=url or (urls[0] if urls else "")): SelectSelector(
+            vol.Required(
+                CONF_URL, default=url or (urls[0] if urls else "")
+            ): SelectSelector(
                 SelectSelectorConfig(
                     options=urls, custom_value=True, mode=SelectSelectorMode.DROPDOWN
                 )
@@ -102,7 +108,9 @@ class WristTalkConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             errors = _validate(user_input)
@@ -141,7 +149,9 @@ class WristTalkConfigFlow(ConfigFlow, domain=DOMAIN):
 class WristTalkOptionsFlow(OptionsFlow):
     """The default pipeline for new watches and the address."""
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             errors = _validate(user_input)
@@ -178,15 +188,21 @@ class AddWatchFlow(ConfigSubentryFlow):
     def _pairing(self):
         return self._get_entry().runtime_data.pairing
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
         if self._wait_task is None:
             self._pairing.open(self.flow_id)
-            self._wait_task = self.hass.async_create_task(self._pairing.async_wait_for_watch())
+            self._wait_task = self.hass.async_create_task(
+                self._pairing.async_wait_for_watch()
+            )
         if not self._wait_task.done():
             return self.async_show_progress(
                 step_id="user",
                 progress_action="wait_watch",
-                description_placeholders={CONF_URL: self._get_entry().options.get(CONF_URL, "")},
+                description_placeholders={
+                    CONF_URL: self._get_entry().options.get(CONF_URL, "")
+                },
                 progress_task=self._wait_task,
             )
         self._watch = self._wait_task.result()
@@ -194,11 +210,15 @@ class AddWatchFlow(ConfigSubentryFlow):
             return self.async_show_progress_done(next_step_id="timeout")
         return self.async_show_progress_done(next_step_id="confirm")
 
-    async def async_step_timeout(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+    async def async_step_timeout(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
         self._pairing.close(self.flow_id)
         return self.async_abort(reason="timeout")
 
-    async def async_step_confirm(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
         watch = self._watch
         assert watch is not None
         if user_input is None:
@@ -217,7 +237,9 @@ class AddWatchFlow(ConfigSubentryFlow):
         # Pairing the same watch again replaces it - its old key stops working
         for subentry in list(entry.subentries.values()):
             if subentry.unique_id == watch.unique_id:
-                self.hass.config_entries.async_remove_subentry(entry, subentry.subentry_id)
+                self.hass.config_entries.async_remove_subentry(
+                    entry, subentry.subentry_id
+                )
         return self.async_create_entry(
             title=watch.model or "Watch",
             unique_id=watch.unique_id,
@@ -234,7 +256,6 @@ class AddWatchFlow(ConfigSubentryFlow):
         """The owner closed the flow: close the window with it."""
         if self._wait_task is not None and not self._wait_task.done():
             self._wait_task.cancel()
-        try:
+        # The entry may be gone already
+        with contextlib.suppress(Exception):
             self._pairing.close(self.flow_id)
-        except Exception:  # noqa: BLE001 - the entry may be gone already
-            pass

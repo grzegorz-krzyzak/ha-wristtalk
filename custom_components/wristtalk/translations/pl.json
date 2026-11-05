@@ -73,6 +73,14 @@
           "relaxed": "Swobodne",
           "aggressive": "Agresywne"
         }
+      },
+      "speech_quality": {
+        "name": "Jakość głosu odpowiedzi",
+        "state": {
+          "fast": "Szybka (mniejszy plik)",
+          "balanced": "Zrównoważona",
+          "best": "Najlepsza (większy plik)"
+        }
       }
     }
   }

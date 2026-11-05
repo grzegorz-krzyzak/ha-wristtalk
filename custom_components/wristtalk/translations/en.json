@@ -73,6 +73,14 @@
           "relaxed": "Relaxed",
           "aggressive": "Aggressive"
         }
+      },
+      "speech_quality": {
+        "name": "Reply voice quality",
+        "state": {
+          "fast": "Fast (smaller)",
+          "balanced": "Balanced",
+          "best": "Best (larger)"
+        }
       }
     }
   }

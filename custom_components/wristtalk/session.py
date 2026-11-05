@@ -31,11 +31,14 @@ MAX_CHUNK_BYTES = 16 * 1024
 MAX_COMMAND_SECONDS = 20.0
 MAX_AUDIO_BYTES = 256 * 1024
 COMMANDS_PER_MINUTE = 30
-HEARD_WAIT_SECONDS = 10.0
+# A request held longer than about 5 s does not come back through the phone (held 10, 15 or 25 s
+# it failed after about 30 s, measured on a fēnix 8 through an iPhone, 2026-11-04): every wait
+# answers within 4 s, and the watch asks again
+HEARD_WAIT_SECONDS = 4.0
 # The pipeline's VAD sees a chunk a moment after it is written: a short grace lets the very chunk
 # on which the command ended come back with the command, instead of the next one a second later
 END_GRACE_SECONDS = 0.2
-LONG_POLL_SECONDS = 15.0
+LONG_POLL_SECONDS = 4.0
 STT_RETRY_ERROR = "stt-stream-failed"
 NOTHING_ERRORS = ("stt-no-text-recognized",)
 # STT failing (after the retry) is "nothing heard" twice in a row on a watch - a short noise before
@@ -100,7 +103,9 @@ class CommandSession:
         )
 
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
-        self._tasks.append(self.hass.async_create_background_task(coro, f"wristtalk {self.session_id}"))
+        self._tasks.append(
+            self.hass.async_create_background_task(coro, f"wristtalk {self.session_id}")
+        )
 
     async def _read_pcm(self) -> None:
         async for chunk in self.decoder.pcm():
@@ -120,7 +125,7 @@ class CommandSession:
     async def _run(self, stream: AsyncIterator[bytes]) -> None:
         try:
             await self.satellite.async_run_command(self, stream)
-        except Exception:  # noqa: BLE001 - reported to the watch as an error
+        except Exception:
             _LOGGER.exception("WristTalk command %s failed", self.session_id)
             self._fail("pipeline_failed")
         if self._retry_pending:
@@ -202,7 +207,9 @@ class CommandSession:
             code = str(data.get("code") or "error")
             if code == STT_RETRY_ERROR and not self._retried and self.heard is None:
                 # Seen in practice; the kept PCM gets one more try, invisible to the user
-                _LOGGER.debug("WristTalk %s: %s, retrying STT once", self.session_id, code)
+                _LOGGER.debug(
+                    "WristTalk %s: %s, retrying STT once", self.session_id, code
+                )
                 self._retry_pending = True
             elif code == STT_RETRY_ERROR:
                 # A failure again: measured with a short noise before speech (the VAD ends the
@@ -223,7 +230,7 @@ class CommandSession:
     async def _synthesize(self, text: str) -> None:
         try:
             self.audio_data = await self.satellite.async_synthesize(text)
-        except Exception:  # noqa: BLE001 - the reply text is on the watch already
+        except Exception:
             _LOGGER.exception("WristTalk %s: speech synthesis failed", self.session_id)
         self._tts_event.set()
 
@@ -254,10 +261,12 @@ class CommandSession:
         return {"state": "waiting"}
 
     async def audio(self) -> bytes:
-        """The ready reply audio (Ogg/Opus), at most MAX_AUDIO_BYTES."""
+        """The ready reply audio (Ogg/Opus), at most MAX_AUDIO_BYTES; 202 while it is being made."""
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(LONG_POLL_SECONDS):
                 await self._tts_event.wait()
+        if not self._tts_event.is_set():
+            raise SessionError("audio_waiting", 202)
         data = self.audio_data
         if data is None:
             if self.error is not None:
@@ -289,7 +298,9 @@ class CommandSession:
 class SessionManager:
     """The current command of each watch, and its rate limit."""
 
-    def __init__(self, hass: HomeAssistant, decoder_factory: Callable[[HomeAssistant], Decoder]) -> None:
+    def __init__(
+        self, hass: HomeAssistant, decoder_factory: Callable[[HomeAssistant], Decoder]
+    ) -> None:
         self._hass = hass
         self._decoder_factory = decoder_factory
         self._sessions: dict[str, CommandSession] = {}
@@ -303,7 +314,12 @@ class SessionManager:
         return session
 
     async def get_or_start(
-        self, watch_id: str, session_id: str, satellite: WristTalkSatellite, *, text_only: bool
+        self,
+        watch_id: str,
+        session_id: str,
+        satellite: WristTalkSatellite,
+        *,
+        text_only: bool,
     ) -> CommandSession:
         current = self._sessions.get(watch_id)
         if current is not None and current.session_id == session_id:
@@ -325,7 +341,11 @@ class SessionManager:
             session_id=session_id,
             decoder=self._decoder_factory(self._hass),
             text_only=text_only,
-            on_closed=lambda s: self._sessions.pop(watch_id, None) if self._sessions.get(watch_id) is s else None,
+            on_closed=lambda s: (
+                self._sessions.pop(watch_id, None)
+                if self._sessions.get(watch_id) is s
+                else None
+            ),
             on_stt=lambda failed: self._count_stt(watch_id, failed),
         )
         self._sessions[watch_id] = session

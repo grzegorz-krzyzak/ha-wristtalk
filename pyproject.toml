@@ -1,0 +1,27 @@
+# Lint and format: ruff, with the rule families Home Assistant core uses (a subset of its list)
+[tool.ruff]
+target-version = "py313"
+required-version = ">=0.17"
+
+[tool.ruff.lint]
+select = [
+    "ASYNC", "B", "BLE", "C4", "E", "F", "G", "I", "LOG", "PERF", "PIE", "PL", "PT", "RET",
+    "RUF", "SIM", "T20", "TRY", "UP", "W",
+]
+ignore = [
+    "E501",     # line length: the formatter decides
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915",  # too many returns / branches / arguments / statements (as core)
+    "PLR2004",  # magic values (as core)
+    "TRY003",   # long messages in exceptions (as core)
+]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+known-first-party = ["custom_components.wristtalk"]
+combine-as-imports = true
+
+[tool.ruff.lint.per-file-ignores]
+# Stand-ins for Assist's audio libraries must exist before Home Assistant is imported
+"tests/conftest.py" = ["E402"]
+# A test makes its Ogg/Opus sample with ffmpeg once, before the code under test runs
+"tests/test_command.py" = ["ASYNC221"]

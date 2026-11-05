@@ -22,7 +22,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import WristTalkConfigEntry
-from .const import DOMAIN
+from .const import DOMAIN, SPEECH_QUALITY_BITRATES, SPEECH_QUALITY_DEFAULT
 from .decoder import async_compress_speech
 from .entity import WatchEntity
 from .select import entity_prefix
@@ -85,14 +85,18 @@ class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
             available_wake_words=[], active_wake_words=[], max_active_wake_words=0
         )
 
-    async def async_set_configuration(self, config: AssistSatelliteConfiguration) -> None:
+    async def async_set_configuration(
+        self, config: AssistSatelliteConfiguration
+    ) -> None:
         """Nothing to configure on the watch from Home Assistant."""
 
     def on_pipeline_event(self, event: PipelineEvent) -> None:
         if self._session is not None:
             self._session.on_event(event)
 
-    async def async_run_command(self, session: CommandSession, stream: AsyncIterator[bytes]) -> None:
+    async def async_run_command(
+        self, session: CommandSession, stream: AsyncIterator[bytes]
+    ) -> None:
         """Run the pipeline up to the agent's reply (as the WristTalk system user).
 
         The pipeline's own streaming TTS stops at the agent's first words before a tool ("Checking
@@ -118,9 +122,22 @@ class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
         options = dict(TTS_OPTIONS)
         if pipeline.tts_voice:
             options[tts.ATTR_VOICE] = pipeline.tts_voice
-        stream = tts.async_create_stream(self.hass, pipeline.tts_engine, pipeline.tts_language, options)
+        stream = tts.async_create_stream(
+            self.hass, pipeline.tts_engine, pipeline.tts_language, options
+        )
         stream.async_set_message(text)
         audio = b"".join([chunk async for chunk in stream.async_stream_result()])
         # Home Assistant's own bitrate option is for MP3 only; the reply goes to the watch through
         # the phone at about 13 kB/s (measured on a fēnix 8, 2026-11-04 - a status reply was 114 kB)
-        return await async_compress_speech(get_ffmpeg_manager(self.hass).binary, audio)
+        return await async_compress_speech(
+            get_ffmpeg_manager(self.hass).binary, audio, self._speech_bitrate()
+        )
+
+    def _speech_bitrate(self) -> str:
+        """The watch's "Reply voice quality" select, the default when it is not there yet."""
+        entity_id = self._select_entity_id("speech_quality")
+        state = self.hass.states.get(entity_id) if entity_id else None
+        quality = state.state if state is not None else SPEECH_QUALITY_DEFAULT
+        return SPEECH_QUALITY_BITRATES.get(
+            quality, SPEECH_QUALITY_BITRATES[SPEECH_QUALITY_DEFAULT]
+        )

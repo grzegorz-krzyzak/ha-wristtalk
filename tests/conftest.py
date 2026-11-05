@@ -10,7 +10,10 @@ from unittest.mock import MagicMock, patch
 # Assist's audio libraries (VAD, noise suppression) have no wheels for Python 3.14 on macOS and do
 # not build there; the tests fake the pipeline, so stand-ins are enough when the real ones are
 # missing. On Linux CI the real packages install normally.
-for _name, _attrs in (("pymicro_vad", ("MicroVad",)), ("pyspeex_noise", ("AudioProcessor",))):
+for _name, _attrs in (
+    ("pymicro_vad", ("MicroVad",)),
+    ("pyspeex_noise", ("AudioProcessor",)),
+):
     try:
         __import__(_name)
     except ImportError:
@@ -19,12 +22,10 @@ for _name, _attrs in (("pymicro_vad", ("MicroVad",)), ("pyspeex_noise", ("AudioP
             setattr(_module, _attr, MagicMock())
         sys.modules[_name] = _module
 
-import pytest
-
 from homeassistant.core import HomeAssistant
 from homeassistant.core_config import async_process_ha_core_config
 from homeassistant.setup import async_setup_component
-
+import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.wristtalk.const import CONF_PIPELINE, CONF_URL, DOMAIN
@@ -44,7 +45,7 @@ PIPELINES = [FakePipeline("p-claude", "Claude"), FakePipeline("p-local", "Local"
 
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations):
-    yield
+    return
 
 
 @pytest.fixture(autouse=True)
@@ -57,8 +58,14 @@ async def core_components(hass: HomeAssistant) -> None:
 def fake_pipelines():
     """Assist pipelines without setting up the whole voice stack."""
     with (
-        patch("custom_components.wristtalk.config_flow.async_get_pipelines", return_value=PIPELINES),
-        patch("custom_components.wristtalk.config_flow.async_get_pipeline", return_value=PIPELINES[0]),
+        patch(
+            "custom_components.wristtalk.config_flow.async_get_pipelines",
+            return_value=PIPELINES,
+        ),
+        patch(
+            "custom_components.wristtalk.config_flow.async_get_pipeline",
+            return_value=PIPELINES[0],
+        ),
     ):
         yield
 
