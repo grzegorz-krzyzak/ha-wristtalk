@@ -6,7 +6,7 @@ Voice assistant for Home Assistant on a Garmin watch: open the WristTalk app, sa
 and the reply, hear the reply from the watch speaker. This integration is the Home Assistant side:
 it pairs the watches and runs their voice through an Assist pipeline you choose.
 
-**Status: 0.1.3, tested in the Connect IQ simulator and on a fēnix 8 Solar 51 mm against a real Home Assistant.**
+**Status: 0.1.4, tested in the Connect IQ simulator and on a fēnix 8 Solar 51 mm against a real Home Assistant.**
 The watch app: [garmin-wristtalk](https://github.com/grzegorz-krzyzak/garmin-wristtalk) - not in
 the Connect IQ store yet.
 
@@ -33,7 +33,7 @@ Assistant.
 
 1. Add the integration: pick the default pipeline for new watches and the address for the watches.
 2. In the integration card, **Add watch**. Pairing stays open for 5 minutes.
-3. On the phone, in Garmin Connect, set the house address in the WristTalk app's settings, then open
+3. On the phone, in the Connect IQ app, set the house address in the WristTalk app's settings, then open
    WristTalk on the watch.
 4. Compare the code on the watch with the one Home Assistant shows and confirm.
 

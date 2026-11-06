@@ -30,7 +30,7 @@
           "url": "Adres dla zegarków"
         },
         "data_description": {
-          "url": "Nowy adres musi trafić do zegarków: wklej go w ustawieniach WristTalk w Garmin Connect albo sparuj zegarek ponownie."
+          "url": "Zapisany adres: [{url}]({url})\n\nSkopiuj go do ustawień WristTalk w aplikacji Connect IQ na telefonie. Zmieniony adres musi też trafić do zegarków: wklej go tam albo sparuj zegarek ponownie."
         }
       }
     },
@@ -51,7 +51,7 @@
         }
       },
       "progress": {
-        "wait_watch": "Otwórz WristTalk na zegarku.\n\nW ustawieniach aplikacji w Garmin Connect wpisz adres domu:\n\n**{url}**\n\nParowanie jest otwarte przez 5 minut."
+        "wait_watch": "Otwórz WristTalk na zegarku.\n\nW ustawieniach WristTalk w aplikacji Connect IQ na telefonie wpisz adres domu:\n\n[**{url}**]({url})\n\nParowanie jest otwarte przez 5 minut."
       },
       "abort": {
         "timeout": "Żaden zegarek nie zgłosił się w ciągu 5 minut. Uruchom „Dodaj zegarek” ponownie."

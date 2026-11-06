@@ -30,7 +30,7 @@
           "url": "Address for the watches"
         },
         "data_description": {
-          "url": "A changed address must reach the watches: paste it in the WristTalk settings in Garmin Connect, or pair the watch again."
+          "url": "Saved address: [{url}]({url})\n\nCopy it into the WristTalk settings in the Connect IQ app on your phone. A changed address must reach the watches too: paste it there, or pair the watch again."
         }
       }
     },
@@ -51,7 +51,7 @@
         }
       },
       "progress": {
-        "wait_watch": "Open WristTalk on the watch.\n\nIn the app settings in Garmin Connect, set the house address to:\n\n**{url}**\n\nPairing stays open for 5 minutes."
+        "wait_watch": "Open WristTalk on the watch.\n\nIn the WristTalk settings in the Connect IQ app on your phone, enter the house address:\n\n[**{url}**]({url})\n\nPairing is open for 5 minutes."
       },
       "abort": {
         "timeout": "No watch asked to pair within 5 minutes. Start \"Add watch\" again."

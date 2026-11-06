@@ -171,6 +171,9 @@ class WristTalkOptionsFlow(OptionsFlow):
                 (user_input or {}).get(CONF_URL) or options.get(CONF_URL),
             ),
             errors=errors,
+            # The address in full, as a link under its field: the dropdown cuts a long one, and on a phone the
+            # link opens in the browser, where the address bar copies it in one touch
+            description_placeholders={CONF_URL: options.get(CONF_URL) or "-"},
         )
 
 

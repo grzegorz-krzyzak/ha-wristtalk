@@ -67,6 +67,8 @@ async def test_single_instance(hass: HomeAssistant) -> None:
 async def test_options_change_pipeline_and_address(hass: HomeAssistant, entry) -> None:
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.FORM
+    # The address in full above the dropdown (which cuts a long one), as a link to copy it from
+    assert result["description_placeholders"] == {CONF_URL: entry.options[CONF_URL]}
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_PIPELINE: "p-local", CONF_URL: "http://192.0.2.10:8123"},
