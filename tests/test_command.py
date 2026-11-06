@@ -21,6 +21,7 @@ from homeassistant.components.assist_pipeline.pipeline import async_get_pipeline
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 import pytest
+from pytest_homeassistant_custom_component.common import async_capture_events
 
 from custom_components.wristtalk import CONF_USER_ID
 from custom_components.wristtalk.const import CONF_PIPELINE, DOMAIN
@@ -88,6 +89,7 @@ class FakePipeline:
             **kwargs,
         }
         self.runs.append(run)
+        event_callback(PipelineEvent(PipelineEventType.RUN_START, {}))
         try:
             async for chunk in stt_stream:
                 run["audio"] += chunk
@@ -832,3 +834,56 @@ async def test_reply_voice_quality_per_watch(
             "/api/wristtalk/v1/audio/s2", headers=watch["headers"]
         )
     assert bitrates == ["10k", "24k"]
+
+
+async def test_a_late_chunk_of_an_ended_command_starts_nothing(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    """Through the phone a chunk of the last command can arrive after the next one has started:
+    it gets 410 and neither ends the current command nor runs the pipeline again."""
+    pipeline.hold_reply = asyncio.Event()
+    assert (await _chunk(watch, "s1", 0, b"abc" + END))[1]["state"] == "heard"
+    assert (await _chunk(watch, "s2", 0, b"x"))[1]["state"] == "listening"
+    for offset in (12, 0):
+        status, body = await _chunk(watch, "s1", offset, b"late" + END)
+        assert status == 410
+        assert body["error"] == "session_ended"
+    assert len(pipeline.runs) == 2
+    # The current command goes on
+    assert (await _chunk(watch, "s2", 1, END))[1]["state"] == "heard"
+    pipeline.hold_reply.set()
+
+
+async def test_a_repeated_final_runs_the_pipeline_once(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    """The watch repeats a chunk whose answer was lost - "final" too, during the run and after it."""
+    pipeline.hold_stt = asyncio.Event()
+    first = asyncio.ensure_future(_chunk(watch, "s1", 0, b"abc", **{"X-WT-Final": "1"}))
+    await asyncio.sleep(0.05)
+    again = asyncio.ensure_future(_chunk(watch, "s1", 0, b"abc", **{"X-WT-Final": "1"}))
+    await asyncio.sleep(0.05)
+    pipeline.hold_stt.set()
+    for answer in (await first, await again):
+        assert answer[1]["state"] == "heard"
+    # After the run: the same answer again, no second run
+    status, body = await _chunk(watch, "s1", 0, b"abc", **{"X-WT-Final": "1"})
+    assert (status, body["state"], body["heard"]) == (
+        200,
+        "heard",
+        "Która jest godzina?",
+    )
+    assert len(pipeline.runs) == 1
+    assert pipeline.runs[0]["audio"] == b"abc"
+
+
+async def test_each_run_names_its_command(hass: HomeAssistant, watch, pipeline) -> None:
+    """A log of pipeline runs can count them per command: the event carries the watch's session."""
+    events = async_capture_events(hass, "wristtalk_command_run")
+    pipeline.errors = ["stt-stream-failed"]  # one STT retry: two runs of one command
+    await _chunk(watch, "s1", 0, END)
+    await _chunk(watch, "s2", 0, END)
+    await hass.async_block_till_done()
+    assert [e.data["session_id"] for e in events] == ["s1", "s1", "s2"]
+    assert all(e.data["run_start"] for e in events)
+    assert events[0].data["entity_id"].startswith("assist_satellite.")

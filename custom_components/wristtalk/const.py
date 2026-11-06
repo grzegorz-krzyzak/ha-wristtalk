@@ -34,6 +34,10 @@ HEADER_TEXT_ONLY: Final = (
 )
 HEADER_FINAL: Final = "X-WT-Final"  # "1" = the user ended the command (START)
 
+# Fired when a pipeline run of a watch command starts: the command's session (as the watch names it)
+# and the run's start, so a log of pipeline runs can count them per command
+EVENT_COMMAND_RUN: Final = "wristtalk_command_run"
+
 # The reply's voice, per watch: Opus bitrate - smaller arrives sooner through the phone (about
 # 13 kB/s on a fēnix 8), larger sounds better
 # Heard on the watch speaker (2026-11-05): hardly any difference, the house status 20 / 30 / 43 kB -

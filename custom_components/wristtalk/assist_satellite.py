@@ -8,7 +8,11 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import tts
-from homeassistant.components.assist_pipeline import PipelineEvent, PipelineStage
+from homeassistant.components.assist_pipeline import (
+    PipelineEvent,
+    PipelineEventType,
+    PipelineStage,
+)
 from homeassistant.components.assist_pipeline.pipeline import async_get_pipeline
 from homeassistant.components.assist_satellite import (
     AssistSatelliteConfiguration,
@@ -22,7 +26,12 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import WristTalkConfigEntry
-from .const import DOMAIN, SPEECH_QUALITY_BITRATES, SPEECH_QUALITY_DEFAULT
+from .const import (
+    DOMAIN,
+    EVENT_COMMAND_RUN,
+    SPEECH_QUALITY_BITRATES,
+    SPEECH_QUALITY_DEFAULT,
+)
 from .decoder import async_compress_speech
 from .entity import WatchEntity
 from .select import entity_prefix
@@ -91,8 +100,19 @@ class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
         """Nothing to configure on the watch from Home Assistant."""
 
     def on_pipeline_event(self, event: PipelineEvent) -> None:
-        if self._session is not None:
-            self._session.on_event(event)
+        if self._session is None:
+            return
+        if event.type is PipelineEventType.RUN_START:
+            # Which command this run is for - a retried STT is a second run of the same command
+            self.hass.bus.async_fire(
+                EVENT_COMMAND_RUN,
+                {
+                    "session_id": self._session.session_id,
+                    "entity_id": self.entity_id,
+                    "run_start": event.timestamp,
+                },
+            )
+        self._session.on_event(event)
 
     async def async_run_command(
         self, session: CommandSession, stream: AsyncIterator[bytes]

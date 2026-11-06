@@ -31,6 +31,9 @@ MAX_CHUNK_BYTES = 16 * 1024
 MAX_COMMAND_SECONDS = 20.0
 MAX_AUDIO_BYTES = 256 * 1024
 COMMANDS_PER_MINUTE = 30
+# The last commands of a watch that have ended: a chunk of one of them arriving late (through the
+# phone a chunk can take 3.5 s) must not end the current command and start the old one again
+ENDED_REMEMBERED = 8
 # A request held longer than about 5 s does not come back through the phone (held 10, 15 or 25 s
 # it failed after about 30 s, measured on a fēnix 8 through an iPhone, 2026-11-04): every wait
 # answers within 4 s, and the watch asks again
@@ -306,6 +309,7 @@ class SessionManager:
         self._sessions: dict[str, CommandSession] = {}
         self._starts: dict[str, deque[float]] = {}
         self._stt_failures: dict[str, int] = {}
+        self._ended: dict[str, deque[str]] = {}
 
     def get(self, watch_id: str, session_id: str) -> CommandSession:
         session = self._sessions.get(watch_id)
@@ -324,7 +328,12 @@ class SessionManager:
         current = self._sessions.get(watch_id)
         if current is not None and current.session_id == session_id:
             return current
+        ended = self._ended.setdefault(watch_id, deque(maxlen=ENDED_REMEMBERED))
+        if session_id in ended:
+            # A late or repeated chunk of a command that has ended: never a second pipeline run
+            raise SessionError("session_ended", 410)
         if current is not None:
+            ended.append(current.session_id)
             # A watch runs one command at a time: a new session means it gave the last one up
             # (its own "nothing said" timer, BACK, a lost connection), finished or not
             await current.close()
