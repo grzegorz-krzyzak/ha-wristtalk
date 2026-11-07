@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -25,8 +26,14 @@ from .const import (
 )
 from .pairing import PairingError, key_matches
 from .session import MAX_CHUNK_BYTES, SessionError
+from .watch_state import async_needs_pairing
 
 MAX_REQUEST_BYTES = MAX_CHUNK_BYTES
+# A pairing request is a few short fields; anything larger is not read (no key needed to send it)
+MAX_PAIR_BODY_BYTES = 1024
+# The watch draws its session ids as hex (timer + random); anything else goes nowhere - not into the
+# run event, the database or the log
+SESSION_ID = re.compile(r"[0-9a-f]{1,32}")
 
 if TYPE_CHECKING:
     from . import WristTalkData
@@ -86,9 +93,13 @@ def authenticated_watch(
     return found
 
 
-async def _json_body(request: web.Request) -> dict[str, Any]:
+async def _pair_body(request: web.Request) -> dict[str, Any] | None:
+    """The pairing request's JSON object; {} when it is not one, None when it is too large."""
+    raw = await request.content.read(MAX_PAIR_BODY_BYTES + 1)
+    if len(raw) > MAX_PAIR_BODY_BYTES:
+        return None
     try:
-        body = await request.json(loads=json.loads)
+        body = json.loads(raw)
     except ValueError:
         return {}
     return body if isinstance(body, dict) else {}
@@ -105,10 +116,13 @@ class PairView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if (error := _protocol_error(request)) is not None:
             return error
-        if (data := _data(hass)) is None:
+        # The window first: outside it nothing of the request is read
+        if (data := _data(hass)) is None or not data.pairing.is_open:
             return _error("pairing_closed", HTTPStatus.FORBIDDEN)
+        if (body := await _pair_body(request)) is None:
+            return _error("request_too_large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
         try:
-            pairing = data.pairing.request(await _json_body(request))
+            pairing = data.pairing.request(body)
         except PairingError as err:
             return _error(err.code, err.status)
         return _reply({"pair_id": pairing.pair_id, "code": pairing.code})
@@ -149,6 +163,26 @@ class PingView(HomeAssistantView):
         return _reply({"ok": True})
 
 
+class RepairView(HomeAssistantView):
+    """The watch's "Pair again" (protocol 3): with its key, before it drops it - Home Assistant
+    revokes the key at once and shows that the watch needs pairing."""
+
+    url = f"{API_BASE}/repair"
+    name = "api:wristtalk:repair"
+    requires_auth = False
+
+    async def post(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        if (error := _protocol_error(request)) is not None:
+            return error
+        entry = _entry(hass)
+        watch = authenticated_watch(hass, request)
+        if entry is None or watch is None:
+            return _error("unauthorized", HTTPStatus.UNAUTHORIZED)
+        async_needs_pairing(hass, entry, watch)
+        return _reply({"ok": True})
+
+
 def _answer(
     hass: HomeAssistant, request: web.Request, response: web.Response
 ) -> web.Response:
@@ -158,7 +192,7 @@ def _answer(
     return response
 
 
-def _watch_context(hass: HomeAssistant, request: web.Request):
+def _watch_context(hass: HomeAssistant, request: web.Request, session_id: str):
     """(runtime data, watch subentry) of an authenticated request, or an error response."""
     if (error := _protocol_error(request)) is not None:
         return None, None, error
@@ -166,6 +200,8 @@ def _watch_context(hass: HomeAssistant, request: web.Request):
     watch = authenticated_watch(hass, request)
     if data is None or watch is None:
         return None, None, _error("unauthorized", HTTPStatus.UNAUTHORIZED)
+    if not SESSION_ID.fullmatch(session_id):
+        return None, None, _error("invalid_request", HTTPStatus.BAD_REQUEST)
     return data, watch, None
 
 
@@ -180,12 +216,14 @@ class CommandView(HomeAssistantView):
         self, request: web.Request, session_id: str, offset: str
     ) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        data, watch, error = _watch_context(hass, request)
+        data, watch, error = _watch_context(hass, request, session_id)
         if error is not None:
             return error
         try:
             position = int(offset)
         except ValueError:
+            position = -1
+        if position < 0:
             return _error("invalid_request", HTTPStatus.BAD_REQUEST)
         if (satellite := data.satellites.get(watch.subentry_id)) is None:
             return _error("not_ready", HTTPStatus.SERVICE_UNAVAILABLE)
@@ -215,7 +253,7 @@ class ReplyView(HomeAssistantView):
 
     async def post(self, request: web.Request, session_id: str) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        data, watch, error = _watch_context(hass, request)
+        data, watch, error = _watch_context(hass, request, session_id)
         if error is not None:
             return error
         try:
@@ -236,7 +274,7 @@ class AudioView(HomeAssistantView):
 
     async def get(self, request: web.Request, session_id: str) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        data, watch, error = _watch_context(hass, request)
+        data, watch, error = _watch_context(hass, request, session_id)
         if error is not None:
             return error
         try:
@@ -259,6 +297,7 @@ def async_register_views(hass: HomeAssistant) -> None:
         PairView(),
         PairPollView(),
         PingView(),
+        RepairView(),
         CommandView(),
         ReplyView(),
         AudioView(),

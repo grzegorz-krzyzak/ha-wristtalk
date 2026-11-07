@@ -35,9 +35,9 @@ Assistant.
 2. In the integration card, **Add watch**. Pairing stays open for 5 minutes.
 3. On the phone, in the Connect IQ app, set the house address in the WristTalk app's settings, then open
    WristTalk on the watch.
-4. Compare the code on the watch with the one Home Assistant shows and confirm.
+4. Type the code the watch shows into **Add watch**. Only the watch whose code you type is added.
 
-Each watch becomes its own device with its own key. Deleting the watch in Home Assistant revokes its
+Each watch becomes its own device with its own key and a **Status** sensor (Paired / Needs pairing again). To pair a watch again, use **Pair again** in its menu (⋮) on the integration page, or **Fix** in Repairs when the watch asked for it - the device and its settings stay. Deleting the watch in Home Assistant revokes its
 key at once. It blocks the watch's further commands; it does not undo an action its current
 command has already started.
 

@@ -42,19 +42,37 @@
     "watch": {
       "entry_type": "Zegarek",
       "initiate_flow": {
-        "user": "Dodaj zegarek"
+        "user": "Dodaj zegarek",
+        "reconfigure": "Sparuj ponownie"
       },
       "step": {
-        "confirm": {
-          "title": "Potwierdź zegarek",
-          "description": "Zegarek {model} pokazuje kod **{code}**.\n\nPotwierdź, jeżeli kod na zegarku jest identyczny."
+        "code": {
+          "title": "Wpisz kod z zegarka",
+          "description": "Wpisz 6-cyfrowy kod widoczny na zegarku.\n\nZegarki, które poprosiły o parowanie:\n{watches}\n\nDodany zostanie tylko zegarek, którego kod wpiszesz.",
+          "data": {
+            "code": "Kod z zegarka"
+          }
+        },
+        "user": {
+          "title": "Dodaj zegarek"
+        },
+        "reconfigure": {
+          "title": "Sparuj ponownie"
         }
       },
       "progress": {
-        "wait_watch": "Otwórz WristTalk na zegarku.\n\nW ustawieniach WristTalk w aplikacji Connect IQ na telefonie wpisz adres domu:\n\n[**{url}**]({url})\n\nParowanie jest otwarte przez 5 minut."
+        "wait_watch": "Otwórz WristTalk na zegarku.\n\nW ustawieniach WristTalk w aplikacji Connect IQ na telefonie wpisz adres domu:\n\n[**{url}**]({url})\n\nParowanie jest otwarte przez 5 minut.",
+        "wait_watch_again": "**{watch}**\n\nOtwórz WristTalk na zegarku. Gdy pokaże kod parowania, wpisz go w następnym kroku.\n\nZegarek nie pokazuje kodu? W jego menu (przytrzymaj UP) wybierz **Sparuj ponownie**.\n\nParowanie jest otwarte przez 5 minut."
       },
       "abort": {
-        "timeout": "Żaden zegarek nie zgłosił się w ciągu 5 minut. Uruchom „Dodaj zegarek” ponownie."
+        "timeout": "Żaden zegarek nie zgłosił się w ciągu 5 minut. Uruchom „Dodaj zegarek” ponownie.",
+        "too_many_codes": "Trzy razy wpisano błędny kod, więc parowanie zostało zamknięte. Uruchom „Dodaj zegarek” jeszcze raz.",
+        "paired_again": "Zegarek sparowany ponownie. Jego ustawienia zostały zachowane."
+      },
+      "error": {
+        "invalid_code": "Ten kod nie pasuje do żadnego zegarka, który poprosił o parowanie. Sprawdź kod na zegarku.",
+        "invalid_format": "Kod ma 6 cyfr - wpisz wszystkie tak, jak pokazuje zegarek.",
+        "wrong_watch": "Ten kod jest z innego zegarka. Wpisz kod widoczny na zegarku, który parujesz ponownie."
       }
     }
   },
@@ -80,6 +98,47 @@
           "fast": "Szybka (mniejszy plik)",
           "balanced": "Zrównoważona",
           "best": "Najlepsza (większy plik)"
+        }
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "paired": "Sparowany",
+          "needs_pairing": "Wymaga ponownego sparowania"
+        }
+      }
+    }
+  },
+  "issues": {
+    "needs_pairing": {
+      "title": "{watch} wymaga ponownego sparowania",
+      "fix_flow": {
+        "step": {
+          "code": {
+            "title": "Wpisz kod z zegarka",
+            "description": "Wpisz 6-cyfrowy kod widoczny na zegarku.\n\nZegarki, które poprosiły o parowanie:\n{watches}\n\nDodany zostanie tylko zegarek, którego kod wpiszesz.",
+            "data": {
+              "code": "Kod z zegarka"
+            }
+          },
+          "init": {
+            "title": "Sparuj ponownie"
+          }
+        },
+        "progress": {
+          "wait_watch_again": "**{watch}**\n\nOtwórz WristTalk na zegarku. Gdy pokaże kod parowania, wpisz go w następnym kroku.\n\nZegarek nie pokazuje kodu? W jego menu (przytrzymaj UP) wybierz **Sparuj ponownie**.\n\nParowanie jest otwarte przez 5 minut."
+        },
+        "error": {
+          "invalid_code": "Ten kod nie pasuje do żadnego zegarka, który poprosił o parowanie. Sprawdź kod na zegarku.",
+          "invalid_format": "Kod ma 6 cyfr - wpisz wszystkie tak, jak pokazuje zegarek.",
+          "wrong_watch": "Ten kod jest z innego zegarka. Wpisz kod widoczny na zegarku, który parujesz ponownie."
+        },
+        "abort": {
+          "timeout": "Żaden zegarek nie zgłosił się w ciągu 5 minut. Uruchom „Dodaj zegarek” ponownie.",
+          "too_many_codes": "Trzy razy wpisano błędny kod, więc parowanie zostało zamknięte. Uruchom „Dodaj zegarek” jeszcze raz.",
+          "watch_removed": "Tego zegarka nie ma już w WristTalk."
         }
       }
     }

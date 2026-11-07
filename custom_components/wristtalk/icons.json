@@ -1,0 +1,12 @@
+{
+  "entity": {
+    "sensor": {
+      "status": {
+        "default": "mdi:watch",
+        "state": {
+          "needs_pairing": "mdi:watch-vibrate-off"
+        }
+      }
+    }
+  }
+}

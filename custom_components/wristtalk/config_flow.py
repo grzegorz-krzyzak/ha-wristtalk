@@ -12,6 +12,7 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
+    ConfigSubentry,
     ConfigSubentryFlow,
     OptionsFlow,
     SubentryFlowResult,
@@ -27,17 +28,15 @@ from homeassistant.helpers.selector import (
 from homeassistant.util import dt as dt_util
 import voluptuous as vol
 
+from . import watch_state
 from .const import (
+    CONF_CODE,
     CONF_PIPELINE,
     CONF_URL,
     DOMAIN,
     SUBENTRY_WATCH,
-    WATCH_APP,
-    WATCH_KEY_HASH,
-    WATCH_MODEL,
-    WATCH_PAIRED_AT,
 )
-from .pairing import PairingError, WatchRequest, hash_key
+from .pairing import PairingError, WatchRequest
 
 
 def _pipeline_options(hass: HomeAssistant) -> list[SelectOptionDict]:
@@ -177,81 +176,78 @@ class WristTalkOptionsFlow(OptionsFlow):
         )
 
 
-class AddWatchFlow(ConfigSubentryFlow):
-    """Add watch: opens the pairing window, waits for the watch, shows its code to confirm.
+class PairingSteps:
+    """Shared by "Add watch", "Pair again" (a watch's menu) and the repair: open the pairing window,
+    wait for a watch, take the code it shows. Closing the flow closes the window (async_remove) -
+    no window left open in the background."""
 
-    Closing the flow closes the window (async_remove) - no window left open in the background.
-    """
+    hass: HomeAssistant
+    flow_id: str
+    _wait_task: asyncio.Task[bool] | None = None
 
-    def __init__(self) -> None:
-        self._wait_task: asyncio.Task[WatchRequest | None] | None = None
-        self._watch: WatchRequest | None = None
+    def _wristtalk_entry(self) -> ConfigEntry:
+        raise NotImplementedError
+
+    def _target(self) -> ConfigSubentry | None:
+        """The watch being paired again, or None for any watch."""
+        return None
+
+    def _finish(self, watch: WatchRequest) -> Any:
+        raise NotImplementedError
 
     @property
     def _pairing(self):
-        return self._get_entry().runtime_data.pairing
+        return self._wristtalk_entry().runtime_data.pairing
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
+    def _wait(self, step_id: str) -> Any:
         if self._wait_task is None:
-            self._pairing.open(self.flow_id)
+            target = self._target()
+            self._pairing.open(self.flow_id, target.unique_id if target else None)
             self._wait_task = self.hass.async_create_task(
                 self._pairing.async_wait_for_watch()
             )
         if not self._wait_task.done():
-            return self.async_show_progress(
-                step_id="user",
-                progress_action="wait_watch",
+            target = self._target()
+            return self.async_show_progress(  # type: ignore[attr-defined]
+                step_id=step_id,
+                progress_action="wait_watch_again" if target else "wait_watch",
                 description_placeholders={
-                    CONF_URL: self._get_entry().options.get(CONF_URL, "")
+                    CONF_URL: self._wristtalk_entry().options.get(CONF_URL, ""),
+                    "watch": target.title if target else "",
                 },
                 progress_task=self._wait_task,
             )
-        self._watch = self._wait_task.result()
-        if self._watch is None:
-            return self.async_show_progress_done(next_step_id="timeout")
-        return self.async_show_progress_done(next_step_id="confirm")
+        if not self._wait_task.result():
+            return self.async_show_progress_done(next_step_id="timeout")  # type: ignore[attr-defined]
+        return self.async_show_progress_done(next_step_id="code")  # type: ignore[attr-defined]
 
-    async def async_step_timeout(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
+    async def async_step_timeout(self, user_input: dict[str, Any] | None = None) -> Any:
         self._pairing.close(self.flow_id)
-        return self.async_abort(reason="timeout")
+        return self.async_abort(reason="timeout")  # type: ignore[attr-defined]
 
-    async def async_step_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        watch = self._watch
-        assert watch is not None
-        if user_input is None:
-            return self.async_show_form(
-                step_id="confirm",
-                description_placeholders={
-                    "code": f"{watch.code[:3]} {watch.code[3:]}",
-                    "model": watch.model or "-",
-                },
-            )
-        try:
-            key = self._pairing.confirm(self.flow_id)
-        except PairingError:
-            return self.async_abort(reason="timeout")
-        entry = self._get_entry()
-        # Pairing the same watch again replaces it - its old key stops working
-        for subentry in list(entry.subentries.values()):
-            if subentry.unique_id == watch.unique_id:
-                self.hass.config_entries.async_remove_subentry(
-                    entry, subentry.subentry_id
-                )
-        return self.async_create_entry(
-            title=watch.model or "Watch",
-            unique_id=watch.unique_id,
-            data={
-                WATCH_KEY_HASH: hash_key(key),
-                WATCH_MODEL: watch.model,
-                WATCH_APP: watch.app_version,
-                WATCH_PAIRED_AT: dt_util.utcnow().isoformat(),
-            },
+    async def async_step_code(self, user_input: dict[str, Any] | None = None) -> Any:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                watch = self._pairing.confirm(self.flow_id, str(user_input[CONF_CODE]))
+            except PairingError as err:
+                if err.code in ("invalid_code", "invalid_format", "wrong_watch"):
+                    errors[CONF_CODE] = err.code
+                elif err.code == "too_many_codes":
+                    return self.async_abort(reason="too_many_codes")  # type: ignore[attr-defined]
+                else:
+                    return self.async_abort(reason="timeout")  # type: ignore[attr-defined]
+            else:
+                return self._finish(watch)
+        watches = "\n".join(
+            f"- {request.model or '-'} ({dt_util.as_local(request.requested_at):%H:%M:%S})"
+            for request in self._pairing.requests
+        )
+        return self.async_show_form(  # type: ignore[attr-defined]
+            step_id="code",
+            data_schema=vol.Schema({vol.Required(CONF_CODE, default=""): str}),
+            description_placeholders={"watches": watches or "-"},
+            errors=errors,
         )
 
     @callback
@@ -262,3 +258,38 @@ class AddWatchFlow(ConfigSubentryFlow):
         # The entry may be gone already
         with contextlib.suppress(Exception):
             self._pairing.close(self.flow_id)
+
+
+class AddWatchFlow(PairingSteps, ConfigSubentryFlow):
+    """Add watch, and "Pair again" from a watch's menu: either way a watch already known gets a new
+    key in its subentry - its device, entities and settings stay."""
+
+    def _wristtalk_entry(self) -> ConfigEntry:
+        return self._get_entry()
+
+    def _target(self) -> ConfigSubentry | None:
+        return (
+            self._get_reconfigure_subentry() if self.source == "reconfigure" else None
+        )
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        return self._wait("user")
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        return self._wait("reconfigure")
+
+    def _finish(self, watch: WatchRequest) -> SubentryFlowResult:
+        entry = self._get_entry()
+        for subentry in entry.subentries.values():
+            if subentry.unique_id == watch.unique_id:
+                watch_state.async_paired_again(self.hass, entry, subentry, watch)
+                return self.async_abort(reason="paired_again")
+        return self.async_create_entry(
+            title=watch.model or "Watch",
+            unique_id=watch.unique_id,
+            data=watch_state.paired_data(watch),
+        )

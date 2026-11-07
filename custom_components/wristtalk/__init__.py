@@ -15,11 +15,12 @@ from .decoder import create_decoder
 from .http import async_register_views
 from .pairing import PairingWindow
 from .session import SessionManager
+from .watch_state import async_sync_issues
 
 if TYPE_CHECKING:
     from .assist_satellite import WristTalkSatellite
 
-PLATFORMS = [Platform.ASSIST_SATELLITE, Platform.SELECT]
+PLATFORMS = [Platform.ASSIST_SATELLITE, Platform.SELECT, Platform.SENSOR]
 CONF_USER_ID = "user_id"
 SYSTEM_USER_NAME = "WristTalk"
 
@@ -81,6 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: WristTalkConfigEntry) ->
         user_id=await _system_user_id(hass, entry),
     )
     async_register_views(hass)
+    async_sync_issues(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True

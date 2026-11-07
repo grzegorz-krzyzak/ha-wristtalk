@@ -1,8 +1,12 @@
 """The pairing window and the watch keys.
 
-The owner opens the window with "Add watch" (a subentry flow); while it is open one watch may ask to
-pair. The flow shows the code the watch shows, the owner confirms, and the watch collects its key on
-its next poll - once. Nothing else is stored than the key's SHA-256 hash in the watch's subentry.
+The owner opens the window with "Add watch" (a subentry flow); while it is open watches may ask to
+pair, each gets its own code. The owner types the code the watch shows into the flow: only that
+watch gets a key - the others are refused and the window closes. Anyone who knows the address can
+ask to pair, so a watch the owner did not type the code of never gets a key (security review
+2026-11-07: compare-and-confirm let a stranger's request be confirmed by mistake). The watch
+collects its key on its next poll. Nothing else is stored than the key's SHA-256 hash in the
+watch's subentry.
 """
 
 from __future__ import annotations
@@ -18,7 +22,13 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from .const import CODE_DIGITS, KEY_BYTES, PAIR_CALLS_PER_WINDOW, PAIRING_WINDOW
+from .const import (
+    CODE_DIGITS,
+    CODE_TRIES,
+    KEY_BYTES,
+    PAIR_CALLS_PER_WINDOW,
+    PAIRING_WINDOW,
+)
 
 
 def hash_key(key: str) -> str:
@@ -29,6 +39,10 @@ def hash_key(key: str) -> str:
 def key_matches(key: str, stored_hash: str) -> bool:
     """Compare in constant time."""
     return hmac.compare_digest(hash_key(key), stored_hash)
+
+
+def _new_code() -> str:
+    return f"{secrets.randbelow(10**CODE_DIGITS):0{CODE_DIGITS}d}"
 
 
 class PairingError(Exception):
@@ -59,9 +73,11 @@ class PairingWindow:
     def __init__(self, hass: HomeAssistant) -> None:
         self._hass = hass
         self._flow_id: str | None = None
+        self._target: str | None = None  # "Pair again": only this watch (its unique ID)
         self._opened_at: datetime | None = None
         self._calls = 0
-        self._request: WatchRequest | None = None
+        self._wrong_codes = 0
+        self._requests: dict[str, WatchRequest] = {}  # by pair_id, the open window's
         self._requested: asyncio.Event = asyncio.Event()
         # The key waits here for the watch's polls after the flow has finished
         self._collected: dict[str, WatchRequest] = {}
@@ -74,12 +90,20 @@ class PairingWindow:
             and dt_util.utcnow() - self._opened_at < PAIRING_WINDOW
         )
 
-    def open(self, flow_id: str) -> None:
-        """Open the window for this flow, closing any earlier one."""
+    @property
+    def requests(self) -> list[WatchRequest]:
+        """The watches that asked in the open window, oldest first."""
+        return sorted(self._requests.values(), key=lambda r: r.requested_at)
+
+    def open(self, flow_id: str, unique_id: str | None = None) -> None:
+        """Open the window for this flow, closing any earlier one; with a unique ID only that watch
+        can be paired ("Pair again")."""
         self._flow_id = flow_id
+        self._target = unique_id
         self._opened_at = dt_util.utcnow()
         self._calls = 0
-        self._request = None
+        self._wrong_codes = 0
+        self._requests = {}
         self._requested = asyncio.Event()
 
     def close(self, flow_id: str) -> None:
@@ -87,12 +111,11 @@ class PairingWindow:
         if self._flow_id == flow_id:
             self._flow_id = None
             self._opened_at = None
-            if self._request is not None and self._request.key is None:
-                self._request = None
+            self._requests = {}
             self._requested.set()  # wake a waiting flow step
 
-    async def async_wait_for_watch(self) -> WatchRequest | None:
-        """For the flow's progress step: the watch's request, or None at the window's end."""
+    async def async_wait_for_watch(self) -> bool:
+        """For the flow's progress step: True once a watch has asked, False at the window's end."""
         remaining = (
             PAIRING_WINDOW - (dt_util.utcnow() - self._opened_at)
             if self._opened_at
@@ -102,8 +125,8 @@ class PairingWindow:
             async with asyncio.timeout(max(remaining.total_seconds(), 0)):
                 await self._requested.wait()
         except TimeoutError:
-            return None
-        return self._request if self.is_open else None
+            return False
+        return self.is_open and bool(self._requests)
 
     def request(self, data: dict[str, Any]) -> WatchRequest:
         """A watch asks to pair (POST pair)."""
@@ -112,30 +135,59 @@ class PairingWindow:
         self._calls += 1
         if self._calls > PAIR_CALLS_PER_WINDOW:
             raise PairingError("too_many_requests", 429)
-        if self._request is not None:
-            raise PairingError("busy", 409)
-        unique_id = str(data.get("unique_id") or "").strip()
+        unique_id = str(data.get("unique_id") or "").strip()[:64]
         if not unique_id:
             raise PairingError("invalid_request", 400)
-        self._request = WatchRequest(
+        # A watch asking again (it starts over after a lost reply) replaces its earlier request
+        for pair_id in [
+            p for p, r in self._requests.items() if r.unique_id == unique_id
+        ]:
+            del self._requests[pair_id]
+        taken = {r.code for r in self._requests.values()}
+        code = _new_code()
+        while code in taken:
+            code = _new_code()
+        request = WatchRequest(
             pair_id=secrets.token_urlsafe(16),
-            code=f"{secrets.randbelow(10**CODE_DIGITS):0{CODE_DIGITS}d}",
-            unique_id=unique_id[:64],
+            code=code,
+            unique_id=unique_id,
             model=str(data.get("model") or "")[:64],
             app_version=str(data.get("app") or "")[:32],
         )
+        self._requests[request.pair_id] = request
         self._requested.set()
-        return self._request
+        return request
 
-    def confirm(self, flow_id: str) -> str:
-        """The owner confirmed: make the key; the watch collects it on its next poll."""
-        request = self._request
-        if self._flow_id != flow_id or request is None:
+    def confirm(self, flow_id: str, code: str) -> WatchRequest:
+        """The owner typed a watch's code: that watch gets the key, the window closes.
+
+        A wrong code counts; after CODE_TRIES the window closes ("too_many_codes"). A code that is not
+        six digits (empty, short, a letter - spaces are fine) is "invalid_format" and does not count:
+        an Enter pressed too early must not use up a try.
+        """
+        if self._flow_id != flow_id or not self.is_open:
             raise PairingError("pairing_closed", 403)
-        request.key = secrets.token_urlsafe(KEY_BYTES)
-        self._collected[request.pair_id] = request
+        typed = code.replace(" ", "")
+        if len(typed) != CODE_DIGITS or not typed.isascii() or not typed.isdigit():
+            raise PairingError("invalid_format", 400)
+        found = None
+        # Every request is compared, in constant time, so the time does not tell which one matched
+        for request in self._requests.values():
+            if hmac.compare_digest(request.code, typed):
+                found = request
+        if found is None:
+            self._wrong_codes += 1
+            if self._wrong_codes >= CODE_TRIES:
+                self.close(flow_id)
+                raise PairingError("too_many_codes", 403)
+            raise PairingError("invalid_code", 400)
+        if self._target is not None and found.unique_id != self._target:
+            # A code that is right, of another watch asking in the same window
+            raise PairingError("wrong_watch", 400)
+        found.key = secrets.token_urlsafe(KEY_BYTES)
+        self._collected[found.pair_id] = found
         self.close(flow_id)
-        return request.key
+        return found
 
     def poll(self, pair_id: str) -> dict[str, Any]:
         """The watch polls its pairing (POST pair/<pair_id>)."""
@@ -151,10 +203,6 @@ class PairingWindow:
             del self._collected[old]
         if (collected := self._collected.get(pair_id)) is not None:
             return {"state": "paired", "key": collected.key}
-        if (
-            self.is_open
-            and self._request is not None
-            and self._request.pair_id == pair_id
-        ):
+        if self.is_open and pair_id in self._requests:
             return {"state": "pending"}
         raise PairingError("expired", 410)

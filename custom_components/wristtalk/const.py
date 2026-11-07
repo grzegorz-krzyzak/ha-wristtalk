@@ -8,6 +8,7 @@ from typing import Final
 DOMAIN: Final = "wristtalk"
 
 CONF_PIPELINE: Final = "pipeline"
+CONF_CODE: Final = "code"
 CONF_URL: Final = "url"
 
 SUBENTRY_WATCH: Final = "watch"
@@ -17,12 +18,18 @@ WATCH_KEY_HASH: Final = "key_hash"
 WATCH_MODEL: Final = "model"
 WATCH_APP: Final = "app_version"
 WATCH_PAIRED_AT: Final = "paired_at"
+# The watch asked to be paired again ("Pair again" in its menu): its key is revoked until then
+WATCH_NEEDS_PAIRING: Final = "needs_pairing"
+
+# Repair issue of a watch that needs pairing again (one per watch, "<key>_<subentry id>")
+ISSUE_NEEDS_PAIRING: Final = "needs_pairing"
 
 # Protocol watch <-> integration: raised on every change one side sends or expects from the other
 # (the compatibility table is in the design notes). 2: every wait within 4 s, audio 202 while it is
-# being made. The app is not public yet, so protocol 1 is no longer taken: an older app hears
-# "update the app" instead of working worse
-PROTOCOL: Final = 2
+# being made. 3: `POST repair` - the watch's "Pair again"; an app on protocol 2 does not send it
+# and keeps working. The app is not public yet, so protocol 1 is no longer taken: an older app
+# hears "update the app" instead of working worse
+PROTOCOL: Final = 3
 MIN_PROTOCOL: Final = 2
 API_BASE: Final = "/api/wristtalk/v1"
 HEADER_PROTOCOL: Final = "X-WT-Protocol"
@@ -49,4 +56,6 @@ SPEECH_QUALITY_DEFAULT: Final = "fast"
 PAIRING_WINDOW: Final = timedelta(minutes=5)
 PAIR_CALLS_PER_WINDOW: Final = 10
 CODE_DIGITS: Final = 6
+# Wrong codes typed in one window before it closes
+CODE_TRIES: Final = 3
 KEY_BYTES: Final = 32

@@ -28,6 +28,12 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 MAX_CHUNK_BYTES = 16 * 1024
+# The whole recording of a command, with the chunks still waiting for a missing one: 20 s of the
+# watch's microphone is about 68 kB (3.4 kB/s, measured), so this only stops a broken or hostile
+# client from filling the memory within the command's 20 s
+MAX_RECORDING_BYTES = 256 * 1024
+# Chunks waiting for a missing one: the watch sends two at a time (security review 2026-11-07)
+MAX_PENDING_CHUNKS = 6
 MAX_COMMAND_SECONDS = 20.0
 MAX_AUDIO_BYTES = 256 * 1024
 COMMANDS_PER_MINUTE = 30
@@ -42,10 +48,12 @@ HEARD_WAIT_SECONDS = 4.0
 # on which the command ended come back with the command, instead of the next one a second later
 END_GRACE_SECONDS = 0.2
 LONG_POLL_SECONDS = 4.0
-STT_RETRY_ERROR = "stt-stream-failed"
+STT_FAILED_ERROR = "stt-stream-failed"
 NOTHING_ERRORS = ("stt-no-text-recognized",)
-# STT failing (after the retry) is "nothing heard" twice in a row on a watch - a short noise before
-# speech ends the command in the VAD; from the third time an error the watch tells by its status.
+# STT failing is "nothing heard" twice in a row on a watch - a short noise before speech ends the
+# command in the VAD; from the third time an error the watch tells by its status. Not retried: a
+# retry gets the same recording and the VAD the same short sound - it rescued none of 20 commands
+# (measured 2026-11-04/07).
 # 424 "failed dependency": no proxy on the way (Home Assistant Cloud) sends it.
 STT_FAILURES_FOR_ERROR = 3
 STT_FAILED = "stt_failed"
@@ -85,25 +93,26 @@ class CommandSession:
     _expected_offset: int = 0
     _pending: dict[int, bytes] = field(default_factory=dict)
     _input_closed: bool = False
-    _pcm: bytearray = field(default_factory=bytearray)
     _queue: asyncio.Queue[bytes | None] = field(default_factory=asyncio.Queue)
     _heard_event: asyncio.Event = field(default_factory=asyncio.Event)
     _reply_event: asyncio.Event = field(default_factory=asyncio.Event)
     _tts_event: asyncio.Event = field(default_factory=asyncio.Event)
     _ended_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _started: asyncio.Event = field(default_factory=asyncio.Event)
     _tasks: list[asyncio.Task[Any]] = field(default_factory=list)
-    _retry_pending: bool = False
-    _retried: bool = False
     _cap_handle: asyncio.TimerHandle | None = None
 
     async def start(self) -> None:
-        await self.decoder.start()
-        self._spawn(self._read_pcm())
-        self._spawn(self._run(self._live_stream()))
-        # End of command without silence (radio, wind): close the input after the cap
-        self._cap_handle = self.hass.loop.call_later(
-            MAX_COMMAND_SECONDS, lambda: self._spawn(self.close_input())
-        )
+        try:
+            await self.decoder.start()
+            self._spawn(self._read_pcm())
+            self._spawn(self._run(self._live_stream()))
+            # End of command without silence (radio, wind): close the input after the cap
+            self._cap_handle = self.hass.loop.call_later(
+                MAX_COMMAND_SECONDS, lambda: self._spawn(self.close_input())
+            )
+        finally:
+            self._started.set()
 
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
         self._tasks.append(
@@ -112,7 +121,6 @@ class CommandSession:
 
     async def _read_pcm(self) -> None:
         async for chunk in self.decoder.pcm():
-            self._pcm.extend(chunk)
             await self._queue.put(chunk)
         await self._queue.put(None)
 
@@ -120,22 +128,12 @@ class CommandSession:
         while (chunk := await self._queue.get()) is not None:
             yield chunk
 
-    async def _kept_stream(self) -> AsyncIterator[bytes]:
-        """The same command again, from the PCM kept for one STT retry."""
-        for start in range(0, len(self._pcm), 3200):
-            yield bytes(self._pcm[start : start + 3200])
-
     async def _run(self, stream: AsyncIterator[bytes]) -> None:
         try:
             await self.satellite.async_run_command(self, stream)
         except Exception:
             _LOGGER.exception("WristTalk command %s failed", self.session_id)
             self._fail("pipeline_failed")
-        if self._retry_pending:
-            self._retry_pending = False
-            self._retried = True
-            await self._run(self._kept_stream())
-            return
         self._finish()
 
     # --- audio in ---------------------------------------------------------------------------
@@ -144,7 +142,22 @@ class CommandSession:
         """A chunk at its byte offset; chunks may come out of order, duplicates are ignored."""
         if len(data) > MAX_CHUNK_BYTES:
             raise SessionError("chunk_too_large", 413)
+        # Two chunks travel at once: a later one can arrive first and start the command, and the
+        # first one then finds ffmpeg still starting (twice in 50 commands an AssertionError and
+        # 500, 2026-11-06/07)
+        await self._started.wait()
         if not self._input_closed and offset >= self._expected_offset:
+            waiting = sum(
+                len(chunk) for o, chunk in self._pending.items() if o != offset
+            )
+            if offset + len(data) > MAX_RECORDING_BYTES or (
+                self._expected_offset + waiting + len(data) > MAX_RECORDING_BYTES
+            ):
+                await self.close_input()
+                raise SessionError("recording_too_large", 413)
+            if offset not in self._pending and len(self._pending) >= MAX_PENDING_CHUNKS:
+                await self.close_input()
+                raise SessionError("too_many_chunks", 413)
             self._pending[offset] = data
             while self._expected_offset in self._pending:
                 chunk = self._pending.pop(self._expected_offset)
@@ -208,15 +221,9 @@ class CommandSession:
                 self._spawn(self._synthesize(self.reply))
         elif event.type is PipelineEventType.ERROR:
             code = str(data.get("code") or "error")
-            if code == STT_RETRY_ERROR and not self._retried and self.heard is None:
-                # Seen in practice; the kept PCM gets one more try, invisible to the user
-                _LOGGER.debug(
-                    "WristTalk %s: %s, retrying STT once", self.session_id, code
-                )
-                self._retry_pending = True
-            elif code == STT_RETRY_ERROR:
-                # A failure again: measured with a short noise before speech (the VAD ends the
-                # command on it) and with silence only - "say it again" helps, until it keeps failing
+            if code == STT_FAILED_ERROR:
+                # Measured with a short noise before speech (the VAD ends the command on it) and
+                # with silence only - "say it again" helps, until it keeps failing
                 failures = self.on_stt(True) if self.on_stt is not None else 1
                 if failures >= STT_FAILURES_FOR_ERROR:
                     self.error_status = STT_FAILED_STATUS

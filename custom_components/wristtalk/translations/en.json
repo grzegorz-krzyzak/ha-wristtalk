@@ -42,19 +42,37 @@
     "watch": {
       "entry_type": "Watch",
       "initiate_flow": {
-        "user": "Add watch"
+        "user": "Add watch",
+        "reconfigure": "Pair again"
       },
       "step": {
-        "confirm": {
-          "title": "Confirm the watch",
-          "description": "The {model} watch shows the code **{code}**.\n\nConfirm if the code on the watch is the same."
+        "code": {
+          "title": "Enter the watch's code",
+          "description": "Enter the 6-digit code shown on the watch.\n\nWatches that asked to pair:\n{watches}\n\nOnly the watch whose code you enter is added.",
+          "data": {
+            "code": "Code from the watch"
+          }
+        },
+        "user": {
+          "title": "Add watch"
+        },
+        "reconfigure": {
+          "title": "Pair again"
         }
       },
       "progress": {
-        "wait_watch": "Open WristTalk on the watch.\n\nIn the WristTalk settings in the Connect IQ app on your phone, enter the house address:\n\n[**{url}**]({url})\n\nPairing is open for 5 minutes."
+        "wait_watch": "Open WristTalk on the watch.\n\nIn the WristTalk settings in the Connect IQ app on your phone, enter the house address:\n\n[**{url}**]({url})\n\nPairing is open for 5 minutes.",
+        "wait_watch_again": "**{watch}**\n\nOpen WristTalk on the watch. When it shows a pairing code, type it in the next step.\n\nNo code on the watch? In its menu (hold UP) choose **Pair again**.\n\nPairing is open for 5 minutes."
       },
       "abort": {
-        "timeout": "No watch asked to pair within 5 minutes. Start \"Add watch\" again."
+        "timeout": "No watch asked to pair within 5 minutes. Start \"Add watch\" again.",
+        "too_many_codes": "A wrong code was entered 3 times, so pairing was closed. Start \"Add watch\" again.",
+        "paired_again": "The watch is paired again. Its settings were kept."
+      },
+      "error": {
+        "invalid_code": "This code does not match any watch that asked to pair. Check the code on the watch.",
+        "invalid_format": "The code has 6 digits - type all of them as the watch shows.",
+        "wrong_watch": "This code is from another watch. Type the code shown on the watch you are pairing again."
       }
     }
   },
@@ -80,6 +98,47 @@
           "fast": "Fast (smaller)",
           "balanced": "Balanced",
           "best": "Best (larger)"
+        }
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "paired": "Paired",
+          "needs_pairing": "Needs pairing again"
+        }
+      }
+    }
+  },
+  "issues": {
+    "needs_pairing": {
+      "title": "{watch} needs pairing again",
+      "fix_flow": {
+        "step": {
+          "code": {
+            "title": "Enter the watch's code",
+            "description": "Enter the 6-digit code shown on the watch.\n\nWatches that asked to pair:\n{watches}\n\nOnly the watch whose code you enter is added.",
+            "data": {
+              "code": "Code from the watch"
+            }
+          },
+          "init": {
+            "title": "Pair again"
+          }
+        },
+        "progress": {
+          "wait_watch_again": "**{watch}**\n\nOpen WristTalk on the watch. When it shows a pairing code, type it in the next step.\n\nNo code on the watch? In its menu (hold UP) choose **Pair again**.\n\nPairing is open for 5 minutes."
+        },
+        "error": {
+          "invalid_code": "This code does not match any watch that asked to pair. Check the code on the watch.",
+          "invalid_format": "The code has 6 digits - type all of them as the watch shows.",
+          "wrong_watch": "This code is from another watch. Type the code shown on the watch you are pairing again."
+        },
+        "abort": {
+          "timeout": "No watch asked to pair within 5 minutes. Start \"Add watch\" again.",
+          "too_many_codes": "A wrong code was entered 3 times, so pairing was closed. Start \"Add watch\" again.",
+          "watch_removed": "The watch is no longer in WristTalk."
         }
       }
     }

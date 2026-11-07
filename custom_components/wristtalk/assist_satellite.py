@@ -103,7 +103,7 @@ class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
         if self._session is None:
             return
         if event.type is PipelineEventType.RUN_START:
-            # Which command this run is for - a retried STT is a second run of the same command
+            # Which command this run is for - a log of pipeline runs counts them per command
             self.hass.bus.async_fire(
                 EVENT_COMMAND_RUN,
                 {

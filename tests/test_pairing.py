@@ -47,11 +47,20 @@ async def _pair(client, body: dict[str, Any] | None = None, headers=HEADERS):
 
 
 async def _confirm(hass: HomeAssistant, flow_id: str) -> dict[str, Any]:
+    """The flow past waiting: the form for the code the watch shows."""
     await hass.async_block_till_done()
     result = await hass.config_entries.subentries.async_configure(flow_id)
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "confirm"
+    assert result["step_id"] == "code"
     return result
+
+
+async def _enter_code(hass: HomeAssistant, flow_id: str, code: str) -> dict[str, Any]:
+    return await hass.config_entries.subentries.async_configure(flow_id, {"code": code})
+
+
+async def _poll(client, pair_id: str):
+    return await client.post(f"/api/wristtalk/v1/pair/{pair_id}", headers=HEADERS)
 
 
 async def test_add_watch_end_to_end(
@@ -65,7 +74,7 @@ async def test_add_watch_end_to_end(
     pairing = await response.json()
     assert len(pairing["code"]) == 6
     assert pairing["code"].isdigit()
-    assert pairing["protocol"] == 2
+    assert pairing["protocol"] == 3
 
     # Before the owner confirms, the watch waits
     poll = await client.post(
@@ -74,12 +83,12 @@ async def test_add_watch_end_to_end(
     assert (await poll.json())["state"] == "pending"
 
     result = await _confirm(hass, flow["flow_id"])
+    # The flow lists who asked; the code itself is only on the watch
+    assert WATCH["model"] in result["description_placeholders"]["watches"]
+    assert pairing["code"] not in str(result)
+    # Typed as the watch shows it, with the space
     code = pairing["code"]
-    assert result["description_placeholders"] == {
-        "code": f"{code[:3]} {code[3:]}",
-        "model": WATCH["model"],
-    }
-    result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+    result = await _enter_code(hass, result["flow_id"], f"{code[:3]} {code[3:]}")
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
     # The watch collects its key - again, if the first reply got lost on the way
@@ -92,7 +101,7 @@ async def test_add_watch_end_to_end(
     poll = await client.post(
         f"/api/wristtalk/v1/pair/{pairing['pair_id']}", headers=HEADERS
     )
-    assert await poll.json() == {"state": "paired", "key": key, "protocol": 2}
+    assert await poll.json() == {"state": "paired", "key": key, "protocol": 3}
     # ... but not after the window
     later = dt_util.utcnow() + PAIRING_WINDOW * 2
     with patch(
@@ -167,17 +176,135 @@ async def test_closing_the_flow_after_the_watch_asked(
     assert not entry.subentries
 
 
-async def test_one_pairing_at_a_time_and_call_limit(
+async def test_only_the_watch_whose_code_is_typed_gets_a_key(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    """Anyone who knows the address can ask to pair while the window is open: a stranger's request
+    neither blocks the owner's watch nor gets a key."""
+    client = await hass_client_no_auth()
+    flow = await _start_add_watch(hass, entry)
+    stranger = await (await _pair(client, {**WATCH, "unique_id": "stranger"})).json()
+    mine = await (await _pair(client)).json()
+    assert stranger["code"] != mine["code"]
+    result = await _confirm(hass, flow["flow_id"])
+    result = await _enter_code(hass, result["flow_id"], mine["code"])
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert (await (await _poll(client, mine["pair_id"])).json())["state"] == "paired"
+    assert (await _poll(client, stranger["pair_id"])).status == 410
+    (subentry,) = entry.subentries.values()
+    assert subentry.unique_id == WATCH["unique_id"]
+    # The window closed with it
+    assert (await _pair(client)).status == 403
+
+
+async def test_call_limit(hass: HomeAssistant, entry, hass_client_no_auth) -> None:
+    client = await hass_client_no_auth()
+    await _start_add_watch(hass, entry)
+    statuses = [
+        (await _pair(client, {**WATCH, "unique_id": f"w{n}"})).status for n in range(11)
+    ]
+    assert statuses[:10] == [200] * 10
+    assert statuses[10] == 429
+
+
+async def test_a_watch_asking_again_replaces_its_request(
     hass: HomeAssistant, entry, hass_client_no_auth
 ) -> None:
     client = await hass_client_no_auth()
+    flow = await _start_add_watch(hass, entry)
+    first = await (await _pair(client)).json()
+    second = await (await _pair(client)).json()
+    assert (await _poll(client, first["pair_id"])).status == 410
+    result = await _confirm(hass, flow["flow_id"])
+    assert result["description_placeholders"]["watches"].count(WATCH["model"]) == 1
+    result = await _enter_code(hass, result["flow_id"], first["code"])
+    assert result["errors"] == {"code": "invalid_code"}
+    result = await _enter_code(hass, result["flow_id"], second["code"])
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_a_wrong_code_can_be_corrected(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    client = await hass_client_no_auth()
+    flow = await _start_add_watch(hass, entry)
+    pairing = await (await _pair(client)).json()
+    wrong = "000000" if pairing["code"] != "000000" else "111111"
+    result = await _confirm(hass, flow["flow_id"])
+    result = await _enter_code(hass, result["flow_id"], wrong)
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"code": "invalid_code"}
+    poll = await _poll(client, pairing["pair_id"])
+    assert (await poll.json())["state"] == "pending"
+    result = await _enter_code(hass, result["flow_id"], pairing["code"])
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_a_code_that_is_not_six_digits_does_not_count(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    """Empty, short, long, with a letter or full-width digits: "the code has 6 digits", no try used."""
+    client = await hass_client_no_auth()
+    flow = await _start_add_watch(hass, entry)
+    pairing = await (await _pair(client)).json()
+    result = await _confirm(hass, flow["flow_id"])
+    for typed in ("", "   ", "12345", "1234567", "12a456", "\uff11" * 6):
+        result = await _enter_code(hass, result["flow_id"], typed)
+        assert result["type"] is FlowResultType.FORM, typed
+        assert result["errors"] == {"code": "invalid_format"}, typed
+    # Six tries above, none counted: the right code still works
+    result = await _enter_code(hass, result["flow_id"], pairing["code"])
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_three_wrong_codes_close_the_window(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    client = await hass_client_no_auth()
+    flow = await _start_add_watch(hass, entry)
+    pairing = await (await _pair(client)).json()
+    wrong = "000000" if pairing["code"] != "000000" else "111111"
+    result = await _confirm(hass, flow["flow_id"])
+    for _ in range(2):
+        result = await _enter_code(hass, result["flow_id"], wrong)
+        assert result["errors"] == {"code": "invalid_code"}
+    result = await _enter_code(hass, result["flow_id"], wrong)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "too_many_codes"
+    assert (await _poll(client, pairing["pair_id"])).status == 410
+    assert (await _pair(client)).status == 403
+    assert not entry.subentries
+
+
+async def test_code_after_the_window_ended(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    client = await hass_client_no_auth()
+    flow = await _start_add_watch(hass, entry)
+    pairing = await (await _pair(client)).json()
+    result = await _confirm(hass, flow["flow_id"])
+    later = dt_util.utcnow() + PAIRING_WINDOW
+    with patch(
+        "custom_components.wristtalk.pairing.dt_util.utcnow", return_value=later
+    ):
+        result = await _enter_code(hass, result["flow_id"], pairing["code"])
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "timeout"
+    assert not entry.subentries
+
+
+async def test_pair_body_is_read_only_inside_the_window_and_small(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    client = await hass_client_no_auth()
+    big = {**WATCH, "model": "x" * 2000}
+    # Outside the window: refused before anything is read
+    assert (await _pair(client, big)).status == 403
     await _start_add_watch(hass, entry)
+    response = await _pair(client, big)
+    assert response.status == 413
+    assert (await response.json())["error"] == "request_too_large"
     assert (await _pair(client)).status == 200
-    second = await _pair(client, {**WATCH, "unique_id": "other"})
-    assert second.status == 409
-    assert (await second.json())["error"] == "busy"
-    statuses = [(await _pair(client)).status for _ in range(9)]
-    assert statuses[-1] == 429
 
 
 async def test_pair_needs_a_watch_id(
@@ -218,7 +345,7 @@ async def test_window_taken_over_before_confirm(
     await _pair(client)
     result = await _confirm(hass, first["flow_id"])
     await _start_add_watch(hass, entry)
-    result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+    result = await _enter_code(hass, result["flow_id"], "123456")
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "timeout"
     assert not entry.subentries
@@ -242,7 +369,7 @@ async def test_pairing_the_same_watch_again_replaces_it(
         flow = await _start_add_watch(hass, entry)
         pairing = await (await _pair(client)).json()
         result = await _confirm(hass, flow["flow_id"])
-        await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+        await _enter_code(hass, result["flow_id"], pairing["code"])
         poll = await client.post(
             f"/api/wristtalk/v1/pair/{pairing['pair_id']}", headers=HEADERS
         )
@@ -264,7 +391,7 @@ async def test_removing_the_watch_revokes_its_key(
     flow = await _start_add_watch(hass, entry)
     pairing = await (await _pair(client)).json()
     result = await _confirm(hass, flow["flow_id"])
-    await hass.config_entries.subentries.async_configure(result["flow_id"], {})
+    await _enter_code(hass, result["flow_id"], pairing["code"])
     key = (
         await (
             await client.post(
@@ -292,7 +419,7 @@ async def test_protocol_versions(
     for headers, status, error in (
         ({}, 400, "invalid_request"),
         ({"X-WT-Protocol": "1"}, 426, "update_app"),
-        ({"X-WT-Protocol": "3"}, 501, "update_integration"),
+        ({"X-WT-Protocol": "4"}, 501, "update_integration"),
     ):
         response = await client.post(path, headers=headers)
         assert response.status == status
