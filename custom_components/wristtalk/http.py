@@ -159,7 +159,11 @@ class PingView(HomeAssistantView):
         if (error := _protocol_error(request)) is not None:
             return error
         if authenticated_watch(hass, request) is None:
-            return _error("unauthorized", HTTPStatus.UNAUTHORIZED)
+            # A watch proving it collected its key: the pairing flow stores it now
+            data = _data(hass)
+            key = request.headers.get(HEADER_KEY, "")
+            if data is None or not key or not data.pairing.acknowledge(key):
+                return _error("unauthorized", HTTPStatus.UNAUTHORIZED)
         return _reply({"ok": True})
 
 

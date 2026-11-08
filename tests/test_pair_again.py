@@ -3,6 +3,7 @@ Repairs after the watch's own "Pair again" - always a new key in the same subent
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 import json
 from pathlib import Path
@@ -19,7 +20,16 @@ from homeassistant.util import dt as dt_util
 from custom_components.wristtalk.const import DOMAIN, PAIRING_WINDOW, SUBENTRY_WATCH
 
 from .test_command import watch_fixture
-from .test_pairing import HEADERS, WATCH, _enter_code, _pair, _poll, _start_add_watch
+from .test_pairing import (
+    HEADERS,
+    WATCH,
+    _collect,
+    _enter_code,
+    _pair,
+    _pair_with_code,
+    _poll,
+    _start_add_watch,
+)
 
 HEADERS_3 = {**HEADERS, "X-WT-Protocol": "3"}
 
@@ -83,12 +93,11 @@ async def test_add_watch_for_a_known_watch_keeps_it(
     flow = await _start_add_watch(hass, entry)
     pairing = await (await _pair(client)).json()
     result = await _code_step(hass, flow, hass.config_entries.subentries)
-    result = await _enter_code(hass, result["flow_id"], pairing["code"])
+    result, new_key = await _pair_with_code(hass, client, result["flow_id"], pairing)
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "paired_again"
     await hass.async_block_till_done()
     assert list(entry.subentries) == [subentry_id]
-    new_key = await _key_of(client, pairing["pair_id"])
     assert await _ping(client, old["headers"]["X-WT-Key"]) == 401
     assert await _ping(client, new_key) == 200
     speech = hass.states.get(_entity_id(hass, entry, "select", "speech_quality"))
@@ -113,12 +122,14 @@ async def test_pair_again_from_the_watch_menu(
     assert result["description_placeholders"]["watch"] == WATCH["model"]
     pairing = await (await _pair(client)).json()
     result = await _code_step(hass, result, flows)
-    result = await _enter_code(hass, result["flow_id"], pairing["code"])
+    # The old key works until the new one is collected
+    assert await _ping(client, old["headers"]["X-WT-Key"]) == 200
+    result, new_key = await _pair_with_code(hass, client, result["flow_id"], pairing)
     assert (result["type"], result["reason"]) == (FlowResultType.ABORT, "paired_again")
     await hass.async_block_till_done()
     assert list(entry.subentries) == [subentry_id]
     assert await _ping(client, old["headers"]["X-WT-Key"]) == 401
-    assert await _ping(client, await _key_of(client, pairing["pair_id"])) == 200
+    assert await _ping(client, new_key) == 200
     speech = hass.states.get(_entity_id(hass, entry, "select", "speech_quality"))
     assert speech.state == "best"
 
@@ -141,7 +152,7 @@ async def test_pair_again_takes_only_that_watch(
     for _ in range(3):
         result = await _enter_code(hass, result["flow_id"], other["code"])
         assert result["errors"] == {"code": "wrong_watch"}
-    result = await _enter_code(hass, result["flow_id"], mine["code"])
+    result, _ = await _pair_with_code(hass, client, result["flow_id"], mine)
     assert result["reason"] == "paired_again"
     assert (await _poll(client, other["pair_id"])).status == 410
     assert len(entry.subentries) == 1
@@ -187,11 +198,13 @@ async def test_the_watch_asks_to_be_paired_again(
     assert result["progress_action"] == "wait_watch_again"
     pairing = await (await _pair(client)).json()
     result = await _code_step(hass, result, flows)
-    result = await flows.async_configure(result["flow_id"], {"code": pairing["code"]})
+    result, new_key = await _pair_with_code(
+        hass, client, result["flow_id"], pairing, flows=flows
+    )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
     assert list(entry.subentries) == [subentry_id]
-    assert await _ping(client, await _key_of(client, pairing["pair_id"])) == 200
+    assert await _ping(client, new_key) == 200
     assert _status(hass, entry) == "paired"
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue.issue_id) is None
     speech = hass.states.get(_entity_id(hass, entry, "select", "speech_quality"))
@@ -292,3 +305,107 @@ def test_every_ending_has_its_text() -> None:
             assert "⚙" in watch[f"{reason}_again"], (language, reason)
             assert "**Fix**" in fix[reason] or "**Napraw**" in fix[reason]
         assert "paired_again" in watch
+
+
+async def test_a_watch_that_never_collects_its_key_is_not_stored(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    """The code typed while the watch's app was closed: no false "paired" - nothing is stored and
+    the ending sends the owner back to Add watch."""
+    client = await hass_client_no_auth()
+    flow = await _start_add_watch(hass, entry)
+    pairing = await (await _pair(client)).json()
+    flows = hass.config_entries.subentries
+    result = await _code_step(hass, flow, flows)
+    result = await _enter_code(hass, result["flow_id"], pairing["code"])
+    assert result["progress_action"] == "wait_key"
+    with patch(
+        "custom_components.wristtalk.pairing.dt_util.utcnow",
+        return_value=dt_util.utcnow() + PAIRING_WINDOW,
+    ):
+        # The window ends: the wait gives up
+        entry.runtime_data.pairing._acknowledged.set()
+        await hass.async_block_till_done()
+        result = await flows.async_configure(result["flow_id"])
+    assert result["reason"] == "not_collected"
+    assert not entry.subentries
+
+
+async def test_a_key_collected_after_the_app_reopens(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    """The app closed after showing the code and opened again within the window: it polls the
+    same pairing (it kept its id), collects the key, pings - the watch is stored."""
+    client = await hass_client_no_auth()
+    flow = await _start_add_watch(hass, entry)
+    pairing = await (await _pair(client)).json()
+    flows = hass.config_entries.subentries
+    result = await _code_step(hass, flow, flows)
+    result = await _enter_code(hass, result["flow_id"], pairing["code"])
+    # ... the app is closed meanwhile, nothing polls; then it opens and polls its kept pairing
+    result, key = await _collect(hass, client, result["flow_id"], pairing)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert await _ping(client, key) == 200
+
+
+async def test_a_wrong_key_proves_nothing(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    client = await hass_client_no_auth()
+    flow = await _start_add_watch(hass, entry)
+    pairing = await (await _pair(client)).json()
+    result = await _code_step(hass, flow, hass.config_entries.subentries)
+    await _enter_code(hass, result["flow_id"], pairing["code"])
+    assert await _ping(client, "not-the-key") == 401
+    assert not entry.subentries
+
+
+def test_the_wait_for_the_key_has_its_texts() -> None:
+    root = Path(__file__).parent.parent / "custom_components/wristtalk/translations"
+    for language in ("en", "pl"):
+        texts = json.loads((root / f"{language}.json").read_text(encoding="utf-8"))
+        watch = texts["config_subentries"]["watch"]
+        fix = texts["issues"]["needs_pairing"]["fix_flow"]
+        assert watch["progress"]["wait_key"]
+        assert fix["progress"]["wait_key"]
+        assert "⚙" in watch["abort"]["not_collected_again"]
+        assert (
+            "Dodaj zegarek" in watch["abort"]["not_collected"]
+            or "Add watch" in watch["abort"]["not_collected"]
+        )
+        assert (
+            "Napraw" in fix["abort"]["not_collected"]
+            or "Fix" in fix["abort"]["not_collected"]
+        )
+
+
+async def test_the_watch_asks_while_pair_again_is_open(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    """The ⚙ "Pair again" opened first, then the watch's own "Pair again" arrives: the open flow
+    must go on (a reload used to end it - "Unknown error" on typing the code, 2026-11-08)."""
+    old = await watch_fixture(hass, entry, hass_client_no_auth)
+    (subentry_id,) = entry.subentries
+    client = old["client"]
+    flows = hass.config_entries.subentries
+    result = await flows.async_init(
+        (entry.entry_id, SUBENTRY_WATCH),
+        context={"source": "reconfigure", "subentry_id": subentry_id},
+    )
+    await client.post(
+        "/api/wristtalk/v1/repair",
+        headers={**HEADERS_3, "X-WT-Key": old["headers"]["X-WT-Key"]},
+    )
+    # (no block_till_done here: it would wait for the open window's whole 3 minutes)
+    await asyncio.sleep(0)
+    # No reload: the status follows at once, the flow is still there
+    assert _status(hass, entry) == "needs_pairing"
+    assert entry.runtime_data.pairing.is_open
+    pairing = await (await _pair(client)).json()
+    assert "code" in pairing
+    result = await _code_step(hass, result, flows)
+    result, key = await _pair_with_code(hass, client, result["flow_id"], pairing)
+    assert result["reason"] == "paired_again"
+    await hass.async_block_till_done()
+    assert _status(hass, entry) == "paired"
+    assert await _ping(client, key) == 200

@@ -5,6 +5,7 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -21,6 +22,11 @@ from .pairing import WatchRequest, hash_key
 
 def issue_id(subentry_id: str) -> str:
     return f"{ISSUE_NEEDS_PAIRING}_{subentry_id}"
+
+
+def status_signal(subentry_id: str) -> str:
+    """Sent when a watch's key or status changed (no reload follows such a change)."""
+    return f"{DOMAIN}_status_{subentry_id}"
 
 
 def paired_data(watch: WatchRequest) -> dict[str, str | bool]:
@@ -48,6 +54,7 @@ def async_paired_again(
         entry, subentry, data={**subentry.data, **paired_data(watch)}
     )
     ir.async_delete_issue(hass, DOMAIN, issue_id(subentry.subentry_id))
+    async_dispatcher_send(hass, status_signal(subentry.subentry_id))
 
 
 @callback
@@ -62,6 +69,7 @@ def async_needs_pairing(
         data={**subentry.data, WATCH_KEY_HASH: "", WATCH_NEEDS_PAIRING: True},
     )
     _create_issue(hass, entry, subentry)
+    async_dispatcher_send(hass, status_signal(subentry.subentry_id))
 
 
 def _create_issue(

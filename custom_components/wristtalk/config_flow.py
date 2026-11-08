@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from typing import Any
 
 from homeassistant.components.assist_pipeline import async_get_pipelines
@@ -37,6 +38,8 @@ from .const import (
     SUBENTRY_WATCH,
 )
 from .pairing import PairingError, WatchRequest
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _pipeline_options(hass: HomeAssistant) -> list[SelectOptionDict]:
@@ -184,6 +187,8 @@ class PairingSteps:
     hass: HomeAssistant
     flow_id: str
     _wait_task: asyncio.Task[bool] | None = None
+    _key_task: asyncio.Task[bool] | None = None
+    _watch: WatchRequest | None = None
 
     def _wristtalk_entry(self) -> ConfigEntry:
         raise NotImplementedError
@@ -235,6 +240,7 @@ class PairingSteps:
             try:
                 watch = self._pairing.confirm(self.flow_id, str(user_input[CONF_CODE]))
             except PairingError as err:
+                _LOGGER.debug("Pairing %s: code refused (%s)", self.flow_id, err.code)
                 if err.code in ("invalid_code", "invalid_format", "wrong_watch"):
                     errors[CONF_CODE] = err.code
                 elif err.code == "too_many_codes":
@@ -243,7 +249,11 @@ class PairingSteps:
                     # The window ended (or another flow took it) while the code was being typed
                     return self.async_abort(reason=self._reason("expired"))  # type: ignore[attr-defined]
             else:
-                return self._finish(watch)
+                _LOGGER.debug(
+                    "Pairing %s: code accepted, waiting for the key", self.flow_id
+                )
+                self._watch = watch
+                return await self.async_step_key()
         watches = "\n".join(
             f"- {request.model or '-'} ({dt_util.as_local(request.requested_at):%H:%M:%S})"
             for request in self._pairing.requests
@@ -255,11 +265,55 @@ class PairingSteps:
             errors=errors,
         )
 
+    async def async_step_key(self, user_input: dict[str, Any] | None = None) -> Any:
+        """The code was right: wait until the watch collects its key and proves it (a ping signed
+        with it) - only then is the watch stored. Until the window's end at most."""
+        if self._key_task is None:
+            self._key_task = self.hass.async_create_task(
+                self._pairing.async_wait_for_key()
+            )
+        if not self._key_task.done():
+            target = self._target()
+            name = (
+                target.title if target else (self._watch.model if self._watch else "")
+            )
+            return self.async_show_progress(  # type: ignore[attr-defined]
+                step_id="key",
+                progress_action="wait_key",
+                # As the other waiting steps: never without placeholders (an "Unknown error" in the
+                # browser right after a code was typed, 2026-11-08 - the one step that had none)
+                description_placeholders={"watch": name or "-"},
+                progress_task=self._key_task,
+            )
+        _LOGGER.debug(
+            "Pairing %s: key %s",
+            self.flow_id,
+            "collected" if self._key_task.result() else "not collected",
+        )
+        if not self._key_task.result():
+            return self.async_show_progress_done(next_step_id="not_collected")  # type: ignore[attr-defined]
+        return self.async_show_progress_done(next_step_id="collected")  # type: ignore[attr-defined]
+
+    async def async_step_collected(
+        self, user_input: dict[str, Any] | None = None
+    ) -> Any:
+        assert self._watch is not None
+        self._pairing.close(self.flow_id)
+        return self._finish(self._watch)
+
+    async def async_step_not_collected(
+        self, user_input: dict[str, Any] | None = None
+    ) -> Any:
+        """The watch never proved it has the key (its app closed, no phone): nothing is stored."""
+        self._pairing.close(self.flow_id)
+        return self.async_abort(reason=self._reason("not_collected"))  # type: ignore[attr-defined]
+
     @callback
     def async_remove(self) -> None:
         """The owner closed the flow: close the window with it."""
-        if self._wait_task is not None and not self._wait_task.done():
-            self._wait_task.cancel()
+        for task in (self._wait_task, self._key_task):
+            if task is not None and not task.done():
+                task.cancel()
         # The entry may be gone already
         with contextlib.suppress(Exception):
             self._pairing.close(self.flow_id)

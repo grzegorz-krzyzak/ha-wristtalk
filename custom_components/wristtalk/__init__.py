@@ -42,6 +42,8 @@ class WristTalkData:
     sessions: SessionManager
     user_id: str
     satellites: dict[str, WristTalkSatellite] = field(default_factory=dict)
+    # What a reload has to follow: the options and the set of watches (not a watch's key or status)
+    shape: tuple = ()
 
 
 type WristTalkConfigEntry = ConfigEntry[WristTalkData]
@@ -80,6 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: WristTalkConfigEntry) ->
         pairing=domain.pairing,
         sessions=domain.sessions,
         user_id=await _system_user_id(hass, entry),
+        shape=_shape(entry),
     )
     async_register_views(hass)
     async_sync_issues(hass, entry)
@@ -88,8 +91,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: WristTalkConfigEntry) ->
     return True
 
 
+def _shape(entry: WristTalkConfigEntry) -> tuple:
+    return (dict(entry.options), frozenset(entry.subentries))
+
+
 async def _async_reload(hass: HomeAssistant, entry: WristTalkConfigEntry) -> None:
-    """A watch added or removed, or the options changed."""
+    """A watch added or removed, or the options changed. Not a watch's new key or status: a reload
+    would end the pairing flows open at that moment (the watch's "Pair again" arriving while
+    "Pair again" was open in Home Assistant - 2026-11-08), and those changes need none - the key
+    is read at each request, the status sensor follows a signal."""
+    if _shape(entry) == entry.runtime_data.shape:
+        return
     await hass.config_entries.async_reload(entry.entry_id)
 
 

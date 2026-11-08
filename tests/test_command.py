@@ -31,8 +31,8 @@ from .test_pairing import (
     HEADERS,
     WATCH,
     _confirm,
-    _enter_code,
     _pair,
+    _pair_with_code,
     _start_add_watch,
 )
 
@@ -220,12 +220,8 @@ async def watch_fixture(
     flow = await _start_add_watch(hass, entry)
     pairing = await (await _pair(client)).json()
     result = await _confirm(hass, flow["flow_id"])
-    await _enter_code(hass, result["flow_id"], pairing["code"])
+    _, key = await _pair_with_code(hass, client, result["flow_id"], pairing)
     await hass.async_block_till_done()
-    poll = await client.post(
-        f"/api/wristtalk/v1/pair/{pairing['pair_id']}", headers=HEADERS
-    )
-    key = (await poll.json())["key"]
     return {"client": client, "headers": {**HEADERS, "X-WT-Key": key}}
 
 

@@ -6,7 +6,7 @@ Voice assistant for Home Assistant on a Garmin watch: open the WristTalk app, sa
 and the reply, hear the reply from the watch speaker. This integration is the Home Assistant side:
 it pairs the watches and runs their voice through an Assist pipeline you choose.
 
-**Status: 0.1.4, tested in the Connect IQ simulator and on a fēnix 8 Solar 51 mm against a real Home Assistant.**
+**Status: 0.1.6, tested in the Connect IQ simulator and on a fēnix 8 Solar 51 mm against a real Home Assistant.**
 The watch app: [garmin-wristtalk](https://github.com/grzegorz-krzyzak/garmin-wristtalk) - not in
 the Connect IQ store yet.
 
@@ -40,6 +40,10 @@ Assistant.
 Each watch becomes its own device with its own key and a **Status** sensor (Paired / Needs pairing again). To pair a watch again, use **Pair again** (the ⚙ next to the watch on the integration page), or **Fix** in Repairs when the watch asked for it - the device and its settings stay. Deleting the watch in Home Assistant revokes its
 key at once. It blocks the watch's further commands; it does not undo an action its current
 command has already started.
+
+**The watch can do everything you exposed to Assist** - also over the internet, through your phone.
+Turn on the watch's passcode (the watch's settings, System, Passcode) so a lost watch is not an open
+door, and delete a lost watch in Home Assistant.
 
 ## Replies on the watch
 
