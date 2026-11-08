@@ -53,7 +53,9 @@ SPEECH_QUALITY_BITRATES: Final = {"fast": "10k", "balanced": "16k", "best": "24k
 SPEECH_QUALITY_DEFAULT: Final = "fast"
 
 # Pairing
-PAIRING_WINDOW: Final = timedelta(minutes=5)
+# 3 minutes: enough to go to Home Assistant and type the code (shorter since 0.1.6; with the code
+# typed a stranger gets no key anyway)
+PAIRING_WINDOW: Final = timedelta(minutes=3)
 PAIR_CALLS_PER_WINDOW: Final = 10
 CODE_DIGITS: Final = 6
 # Wrong codes typed in one window before it closes

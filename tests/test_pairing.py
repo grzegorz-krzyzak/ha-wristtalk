@@ -289,7 +289,8 @@ async def test_code_after_the_window_ended(
     ):
         result = await _enter_code(hass, result["flow_id"], pairing["code"])
     assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "timeout"
+    # Not "no watch asked": one did, the time ran out while the code was typed
+    assert result["reason"] == "expired"
     assert not entry.subentries
 
 
@@ -347,7 +348,7 @@ async def test_window_taken_over_before_confirm(
     await _start_add_watch(hass, entry)
     result = await _enter_code(hass, result["flow_id"], "123456")
     assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "timeout"
+    assert result["reason"] == "expired"
     assert not entry.subentries
 
 
@@ -450,3 +451,26 @@ async def test_endpoints_without_the_integration(
             "/api/wristtalk/v1/ping", headers={**HEADERS, "X-WT-Key": "k"}
         )
     ).status == 401
+
+
+async def test_the_window_is_three_minutes(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    """Long enough to go to Home Assistant and type the code; no longer (0.1.6)."""
+    client = await hass_client_no_auth()
+    opened = dt_util.utcnow()
+    with patch(
+        "custom_components.wristtalk.pairing.dt_util.utcnow", return_value=opened
+    ):
+        await _start_add_watch(hass, entry)
+    for after, status in (
+        (timedelta(minutes=2, seconds=59), 200),
+        (timedelta(minutes=3), 403),
+    ):
+        with patch(
+            "custom_components.wristtalk.pairing.dt_util.utcnow",
+            return_value=opened + after,
+        ):
+            assert (
+                await _pair(client, {**WATCH, "unique_id": str(after)})
+            ).status == status

@@ -195,6 +195,10 @@ class PairingSteps:
     def _finish(self, watch: WatchRequest) -> Any:
         raise NotImplementedError
 
+    def _reason(self, reason: str) -> str:
+        """An ending that sends the owner back where they started (Add watch, the ⚙, Fix)."""
+        return reason
+
     @property
     def _pairing(self):
         return self._wristtalk_entry().runtime_data.pairing
@@ -223,7 +227,7 @@ class PairingSteps:
 
     async def async_step_timeout(self, user_input: dict[str, Any] | None = None) -> Any:
         self._pairing.close(self.flow_id)
-        return self.async_abort(reason="timeout")  # type: ignore[attr-defined]
+        return self.async_abort(reason=self._reason("timeout"))  # type: ignore[attr-defined]
 
     async def async_step_code(self, user_input: dict[str, Any] | None = None) -> Any:
         errors: dict[str, str] = {}
@@ -234,9 +238,10 @@ class PairingSteps:
                 if err.code in ("invalid_code", "invalid_format", "wrong_watch"):
                     errors[CONF_CODE] = err.code
                 elif err.code == "too_many_codes":
-                    return self.async_abort(reason="too_many_codes")  # type: ignore[attr-defined]
+                    return self.async_abort(reason=self._reason("too_many_codes"))  # type: ignore[attr-defined]
                 else:
-                    return self.async_abort(reason="timeout")  # type: ignore[attr-defined]
+                    # The window ended (or another flow took it) while the code was being typed
+                    return self.async_abort(reason=self._reason("expired"))  # type: ignore[attr-defined]
             else:
                 return self._finish(watch)
         watches = "\n".join(
@@ -271,6 +276,10 @@ class AddWatchFlow(PairingSteps, ConfigSubentryFlow):
         return (
             self._get_reconfigure_subentry() if self.source == "reconfigure" else None
         )
+
+    def _reason(self, reason: str) -> str:
+        # "Pair again" (the ⚙) has its own endings: "click the ⚙ again", not "Add watch"
+        return f"{reason}_again" if self.source == "reconfigure" else reason
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None

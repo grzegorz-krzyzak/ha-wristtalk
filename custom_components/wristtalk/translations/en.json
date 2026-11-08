@@ -61,13 +61,17 @@
         }
       },
       "progress": {
-        "wait_watch": "Open WristTalk on the watch.\n\nIn the WristTalk settings in the Connect IQ app on your phone, enter the house address:\n\n[**{url}**]({url})\n\nPairing is open for 5 minutes.",
-        "wait_watch_again": "**{watch}**\n\nOpen WristTalk on the watch. When it shows a pairing code, type it in the next step.\n\nNo code on the watch? In its menu (hold UP) choose **Pair again**.\n\nPairing is open for 5 minutes."
+        "wait_watch": "Open WristTalk on the watch.\n\nIn the WristTalk settings in the Connect IQ app on your phone, enter the house address:\n\n[**{url}**]({url})\n\nPairing is open for 3 minutes.",
+        "wait_watch_again": "**{watch}**\n\nOpen WristTalk on the watch. When it shows a pairing code, type it in the next step.\n\nNo code on the watch? In its menu (hold UP) choose **Pair again**.\n\nPairing is open for 3 minutes."
       },
       "abort": {
-        "timeout": "No watch asked to pair within 5 minutes. Start \"Add watch\" again.",
-        "too_many_codes": "A wrong code was entered 3 times, so pairing was closed. Start \"Add watch\" again.",
-        "paired_again": "The watch is paired again. Its settings were kept."
+        "timeout": "No watch asked to pair within 3 minutes. Click **+ Add watch** again.",
+        "too_many_codes": "A wrong code was entered 3 times, so pairing was closed. Click **+ Add watch** again.",
+        "paired_again": "The watch is paired again. Its settings were kept.",
+        "timeout_again": "The watch did not ask to pair within 3 minutes. Click the **⚙** next to the watch again.",
+        "expired": "Pairing ended after 3 minutes, before the code was typed. Click **+ Add watch** again - the watch shows a new code.",
+        "expired_again": "Pairing ended after 3 minutes, before the code was typed. Click the **⚙** next to the watch again - the watch shows a new code.",
+        "too_many_codes_again": "A wrong code was entered 3 times, so pairing was closed. Click the **⚙** next to the watch again."
       },
       "error": {
         "invalid_code": "This code does not match any watch that asked to pair. Check the code on the watch.",
@@ -128,7 +132,7 @@
           }
         },
         "progress": {
-          "wait_watch_again": "**{watch}**\n\nOpen WristTalk on the watch. When it shows a pairing code, type it in the next step.\n\nNo code on the watch? In its menu (hold UP) choose **Pair again**.\n\nPairing is open for 5 minutes."
+          "wait_watch_again": "**{watch}**\n\nOpen WristTalk on the watch. When it shows a pairing code, type it in the next step.\n\nNo code on the watch? In its menu (hold UP) choose **Pair again**.\n\nPairing is open for 3 minutes."
         },
         "error": {
           "invalid_code": "This code does not match any watch that asked to pair. Check the code on the watch.",
@@ -136,9 +140,10 @@
           "wrong_watch": "This code is from another watch. Type the code shown on the watch you are pairing again."
         },
         "abort": {
-          "timeout": "No watch asked to pair within 5 minutes. Start \"Add watch\" again.",
-          "too_many_codes": "A wrong code was entered 3 times, so pairing was closed. Start \"Add watch\" again.",
-          "watch_removed": "The watch is no longer in WristTalk."
+          "timeout": "The watch did not ask to pair within 3 minutes. Click **Fix** again.",
+          "too_many_codes": "A wrong code was entered 3 times, so pairing was closed. Click **Fix** again.",
+          "watch_removed": "The watch is no longer in WristTalk.",
+          "expired": "Pairing ended after 3 minutes, before the code was typed. Click **Fix** again - the watch shows a new code."
         }
       }
     }

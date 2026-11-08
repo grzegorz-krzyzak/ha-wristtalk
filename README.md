@@ -32,7 +32,7 @@ Assistant.
 ## Setup
 
 1. Add the integration: pick the default pipeline for new watches and the address for the watches.
-2. In the integration card, **Add watch**. Pairing stays open for 5 minutes.
+2. In the integration card, **Add watch**. Pairing stays open for 3 minutes.
 3. On the phone, in the Connect IQ app, set the house address in the WristTalk app's settings, then open
    WristTalk on the watch.
 4. Type the code the watch shows into **Add watch**. Only the watch whose code you type is added.

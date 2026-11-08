@@ -3,15 +3,20 @@ Repairs after the watch's own "Pair again" - always a new key in the same subent
 
 from __future__ import annotations
 
+from datetime import timedelta
+import json
+from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from homeassistant.components.repairs import repairs_flow_manager
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
 
-from custom_components.wristtalk.const import DOMAIN, SUBENTRY_WATCH
+from custom_components.wristtalk.const import DOMAIN, PAIRING_WINDOW, SUBENTRY_WATCH
 
 from .test_command import watch_fixture
 from .test_pairing import HEADERS, WATCH, _enter_code, _pair, _poll, _start_add_watch
@@ -218,3 +223,72 @@ async def test_an_app_on_protocol_2_keeps_working(
     old = await watch_fixture(hass, entry, hass_client_no_auth)
     assert old["headers"]["X-WT-Protocol"] == "2"
     assert await _ping(old["client"], old["headers"]["X-WT-Key"]) == 200
+
+
+async def test_pair_again_endings_send_back_to_the_cog(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    """Started from the ⚙, an ending says "click the ⚙ again", not "Add watch"."""
+    old = await watch_fixture(hass, entry, hass_client_no_auth)
+    (subentry_id,) = entry.subentries
+    flows = hass.config_entries.subentries
+    context = {"source": "reconfigure", "subentry_id": subentry_id}
+    result = await flows.async_init((entry.entry_id, SUBENTRY_WATCH), context=context)
+    pairing = await (await _pair(old["client"])).json()
+    result = await _code_step(hass, result, flows)
+    with patch(
+        "custom_components.wristtalk.pairing.dt_util.utcnow",
+        return_value=dt_util.utcnow() + PAIRING_WINDOW,
+    ):
+        result = await _enter_code(hass, result["flow_id"], pairing["code"])
+    assert result["reason"] == "expired_again"
+    with patch(
+        "custom_components.wristtalk.pairing.PAIRING_WINDOW", timedelta(milliseconds=50)
+    ):
+        result = await flows.async_init(
+            (entry.entry_id, SUBENTRY_WATCH), context=context
+        )
+        await hass.async_block_till_done()
+        result = await flows.async_configure(result["flow_id"])
+    assert result["reason"] == "timeout_again"
+
+
+async def test_fix_endings_send_back_to_fix(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    assert await async_setup_component(hass, "repairs", {})
+    old = await watch_fixture(hass, entry, hass_client_no_auth)
+    (subentry_id,) = entry.subentries
+    await old["client"].post(
+        "/api/wristtalk/v1/repair",
+        headers={**HEADERS_3, "X-WT-Key": old["headers"]["X-WT-Key"]},
+    )
+    await hass.async_block_till_done()
+    flows = repairs_flow_manager(hass)
+    result = await flows.async_init(
+        DOMAIN, context={"issue_id": f"needs_pairing_{subentry_id}"}
+    )
+    pairing = await (await _pair(old["client"])).json()
+    result = await _code_step(hass, result, flows)
+    with patch(
+        "custom_components.wristtalk.pairing.dt_util.utcnow",
+        return_value=dt_util.utcnow() + PAIRING_WINDOW,
+    ):
+        result = await flows.async_configure(
+            result["flow_id"], {"code": pairing["code"]}
+        )
+    assert result["reason"] == "expired"
+
+
+def test_every_ending_has_its_text() -> None:
+    """Each ending a flow can give has a text in both languages, in the right place."""
+    root = Path(__file__).parent.parent / "custom_components/wristtalk/translations"
+    for language in ("en", "pl"):
+        texts = json.loads((root / f"{language}.json").read_text(encoding="utf-8"))
+        watch = texts["config_subentries"]["watch"]["abort"]
+        fix = texts["issues"]["needs_pairing"]["fix_flow"]["abort"]
+        for reason in ("timeout", "expired", "too_many_codes"):
+            assert "Add watch" in watch[reason] or "Dodaj zegarek" in watch[reason]
+            assert "⚙" in watch[f"{reason}_again"], (language, reason)
+            assert "**Fix**" in fix[reason] or "**Napraw**" in fix[reason]
+        assert "paired_again" in watch
