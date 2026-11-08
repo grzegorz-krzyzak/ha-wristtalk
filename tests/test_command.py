@@ -256,7 +256,7 @@ async def test_watch_device_and_entities(hass: HomeAssistant, entry, watch) -> N
 async def test_command_end_to_end(hass: HomeAssistant, watch, pipeline, entry) -> None:
     assert await _chunk(watch, "a1", 0, b"abc") == (
         200,
-        {"state": "listening", "speech": False, "protocol": 3},
+        {"state": "listening", "speech": False, "protocol": 4},
     )
     status, body = await _chunk(watch, "a1", 3, b"def" + END)
     assert (status, body["state"], body["heard"]) == (
@@ -268,7 +268,7 @@ async def test_command_end_to_end(hass: HomeAssistant, watch, pipeline, entry) -
     reply = await watch["client"].post(
         "/api/wristtalk/v1/reply/a1", headers=watch["headers"]
     )
-    assert await reply.json() == {"reply": "Jest 21:37.", "audio": True, "protocol": 3}
+    assert await reply.json() == {"reply": "Jest 21:37.", "audio": True, "protocol": 4}
 
     audio = await watch["client"].get(
         "/api/wristtalk/v1/audio/a1", headers=watch["headers"]
@@ -387,7 +387,7 @@ async def test_third_stt_failure_in_a_row_is_an_error(
         assert (await _chunk(watch, session, 0, END))[1]["state"] == "nothing"
     assert await _chunk(watch, "a6", 0, END) == (
         424,
-        {"error": "stt_failed", "protocol": 3},
+        {"error": "stt_failed", "protocol": 4},
     )
 
 
@@ -447,7 +447,7 @@ async def test_the_replaced_command_ends_before_the_new_one(
     status, body = await _chunk(watch, "a2", 0, END)
     assert (status, body) == (
         200,
-        {"state": "heard", "heard": "Która jest godzina?", "protocol": 3},
+        {"state": "heard", "heard": "Która jest godzina?", "protocol": 4},
     )
 
 
@@ -461,7 +461,7 @@ async def test_rate_limit(hass: HomeAssistant, watch, pipeline) -> None:
             await hass.async_block_till_done()
         assert (await _chunk(watch, "a3", 0, END)) == (
             429,
-            {"error": "too_many_commands", "protocol": 3},
+            {"error": "too_many_commands", "protocol": 4},
         )
 
 
@@ -681,7 +681,7 @@ async def test_removed_while_listening(
     await _remove_watch(hass, entry)
     assert await _chunk(watch, "a1", 3, b"def") == (
         401,
-        {"error": "unauthorized", "protocol": 3},
+        {"error": "unauthorized", "protocol": 4},
     )
 
 
@@ -737,7 +737,7 @@ async def test_removed_while_recognising(
     pipeline.hold_stt.set()
     await hass.async_block_till_done()
     # Answered at once (not after the STT wait), with what makes the watch pair again
-    assert await request == (401, {"error": "unauthorized", "protocol": 3})
+    assert await request == (401, {"error": "unauthorized", "protocol": 4})
     assert pipeline.synthesized == []
     reply = await watch["client"].post(
         "/api/wristtalk/v1/reply/a1", headers=watch["headers"]
@@ -885,6 +885,53 @@ async def test_a_repeated_final_runs_the_pipeline_once(
     assert pipeline.runs[0]["audio"] == b"abc"
 
 
+async def test_final_before_an_earlier_chunk(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    """Protocol 4: "final" goes while an earlier chunk is still on its way - the input waits for it."""
+    final = asyncio.ensure_future(_chunk(watch, "a1", 3, b"def", **{"X-WT-Final": "1"}))
+    await asyncio.sleep(0.1)
+    assert not final.done()
+    assert (await _chunk(watch, "a1", 0, b"abc"))[0] == 200
+    status, body = await final
+    assert (status, body["state"]) == (200, "heard")
+    assert pipeline.runs[0]["audio"] == b"abcdef"
+    assert len(pipeline.runs) == 1
+
+
+async def test_a_lost_chunk_sent_again_after_final(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    assert (await _chunk(watch, "a1", 0, b"ab"))[1]["state"] == "listening"
+    # The chunk at 2 was lost on the way; "final" comes first, then the chunk again
+    final = asyncio.ensure_future(_chunk(watch, "a1", 4, b"ef", **{"X-WT-Final": "1"}))
+    await asyncio.sleep(0.1)
+    await _chunk(watch, "a1", 2, b"cd")
+    assert (await final)[1]["state"] == "heard"
+    assert pipeline.runs[0]["audio"] == b"abcdef"
+
+
+async def test_after_final_a_missing_chunk_is_waited_for_within_the_wait(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    """The answer to "final" waits for the missing chunk at most the one wait, then "listening"."""
+    with patch("custom_components.wristtalk.session.HEARD_WAIT_SECONDS", 0.1):
+        status, body = await _chunk(watch, "a1", 3, b"def", **{"X-WT-Final": "1"})
+    assert (status, body["state"]) == (200, "listening")
+    assert pipeline.runs[0]["audio"] == b""
+
+
+async def test_a_gap_after_final_that_never_fills_ends_at_the_cap(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    with patch("custom_components.wristtalk.session.MAX_COMMAND_SECONDS", 0.2):
+        status, body = await _chunk(watch, "a1", 3, b"def", **{"X-WT-Final": "1"})
+    assert (status, body["state"]) == (200, "heard")
+    # Only what came in order reached the pipeline: nothing before the missing chunk
+    assert pipeline.runs[0]["audio"] == b""
+    assert len(pipeline.runs) == 1
+
+
 async def test_each_run_names_its_command(hass: HomeAssistant, watch, pipeline) -> None:
     """A log of pipeline runs can count them per command: the event carries the watch's session."""
     events = async_capture_events(hass, "wristtalk_command_run")
@@ -903,7 +950,7 @@ async def test_recording_limit(hass: HomeAssistant, watch, pipeline) -> None:
         assert (await _chunk(watch, "a1", 0, b"abcdef"))[0] == 200
         assert await _chunk(watch, "a1", 6, b"ghijk") == (
             413,
-            {"error": "recording_too_large", "protocol": 3},
+            {"error": "recording_too_large", "protocol": 4},
         )
     # The input is closed - the command is what came before
     assert (await _chunk(watch, "a1", 6, b""))[1]["state"] == "heard"
@@ -927,7 +974,7 @@ async def test_waiting_chunks_limit(hass: HomeAssistant, watch, pipeline) -> Non
     assert (await _chunk(watch, "a1", 60, b"x"))[0] == 200
     assert await _chunk(watch, "a1", 70, b"x") == (
         413,
-        {"error": "too_many_chunks", "protocol": 3},
+        {"error": "too_many_chunks", "protocol": 4},
     )
 
 

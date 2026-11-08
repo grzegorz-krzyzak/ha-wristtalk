@@ -93,6 +93,8 @@ class CommandSession:
     _expected_offset: int = 0
     _pending: dict[int, bytes] = field(default_factory=dict)
     _input_closed: bool = False
+    # Where the recording ends, once "final" came: the input closes when everything before it is in
+    _final_end: int | None = None
     _queue: asyncio.Queue[bytes | None] = field(default_factory=asyncio.Queue)
     _heard_event: asyncio.Event = field(default_factory=asyncio.Event)
     _reply_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -146,6 +148,8 @@ class CommandSession:
         # first one then finds ffmpeg still starting (twice in 50 commands an AssertionError and
         # 500, 2026-11-06/07)
         await self._started.wait()
+        if final:
+            self._final_end = max(self._final_end or 0, offset + len(data))
         if not self._input_closed and offset >= self._expected_offset:
             waiting = sum(
                 len(chunk) for o, chunk in self._pending.items() if o != offset
@@ -163,7 +167,10 @@ class CommandSession:
                 chunk = self._pending.pop(self._expected_offset)
                 await self.decoder.feed(chunk)
                 self._expected_offset += len(chunk)
-        if final:
+        # "final" may come before an earlier chunk, or before a lost one sent again (protocol 4):
+        # the input closes only once the whole recording up to its end is in; the command's cap
+        # closes it if a chunk never comes
+        if self._final_end is not None and self._expected_offset >= self._final_end:
             await self.close_input()
 
     async def close_input(self) -> None:
@@ -177,14 +184,23 @@ class CommandSession:
 
     async def chunk_reply(self) -> dict[str, Any]:
         """The answer to a chunk: listening, or - once the command has ended - the command."""
+        loop = asyncio.get_running_loop()
+        # After "final" a missing chunk is on its way: wait for it within the one 4 s wait, not
+        # just the grace - an answer at once would have the watch repeat "final" for nothing
+        grace = HEARD_WAIT_SECONDS if self._final_end is not None else END_GRACE_SECONDS
+        deadline = (
+            loop.time()
+            + grace
+            + (0 if self._final_end is not None else HEARD_WAIT_SECONDS)
+        )
         if not self._heard_event.is_set() and not self._input_closed:
             with contextlib.suppress(TimeoutError):
-                async with asyncio.timeout(END_GRACE_SECONDS):
+                async with asyncio.timeout(grace):
                     await self._ended_event.wait()
         if not self._heard_event.is_set() and not self._input_closed:
             return {"state": "listening", "speech": self.speech}
         with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(HEARD_WAIT_SECONDS):
+            async with asyncio.timeout(max(0.0, deadline - loop.time())):
                 await self._heard_event.wait()
         if self.error is not None:
             raise SessionError(self.error, self.error_status)

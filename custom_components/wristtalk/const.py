@@ -29,7 +29,7 @@ ISSUE_NEEDS_PAIRING: Final = "needs_pairing"
 # being made. 3: `POST repair` - the watch's "Pair again"; an app on protocol 2 does not send it
 # and keeps working. The app is not public yet, so protocol 1 is no longer taken: an older app
 # hears "update the app" instead of working worse
-PROTOCOL: Final = 3
+PROTOCOL: Final = 4
 MIN_PROTOCOL: Final = 2
 API_BASE: Final = "/api/wristtalk/v1"
 HEADER_PROTOCOL: Final = "X-WT-Protocol"
