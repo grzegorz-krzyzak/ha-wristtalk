@@ -106,7 +106,7 @@ async def test_add_watch_end_to_end(
     pairing = await response.json()
     assert len(pairing["code"]) == 6
     assert pairing["code"].isdigit()
-    assert pairing["protocol"] == 4
+    assert pairing["protocol"] == 5
 
     # Before the owner confirms, the watch waits
     poll = await client.post(
@@ -138,7 +138,7 @@ async def test_add_watch_end_to_end(
     poll = await client.post(
         f"/api/wristtalk/v1/pair/{pairing['pair_id']}", headers=HEADERS
     )
-    assert await poll.json() == {"state": "paired", "key": key, "protocol": 4}
+    assert await poll.json() == {"state": "paired", "key": key, "protocol": 5}
     assert not entry.subentries
     # ... and proves it: the first request signed with it
     ping = await client.post(
@@ -453,7 +453,7 @@ async def test_protocol_versions(
     for headers, status, error in (
         ({}, 400, "invalid_request"),
         ({"X-WT-Protocol": "1"}, 426, "update_app"),
-        ({"X-WT-Protocol": "5"}, 501, "update_integration"),
+        ({"X-WT-Protocol": "6"}, 501, "update_integration"),
     ):
         response = await client.post(path, headers=headers)
         assert response.status == status

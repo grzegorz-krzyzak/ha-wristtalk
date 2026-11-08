@@ -95,6 +95,9 @@ class CommandSession:
     _input_closed: bool = False
     # Where the recording ends, once "final" came: the input closes when everything before it is in
     _final_end: int | None = None
+    # Chunk requests waiting for the command's text: with protocol 5 only one waits, the others
+    # answer "recognizing" at once
+    _heard_waiters: int = 0
     _queue: asyncio.Queue[bytes | None] = field(default_factory=asyncio.Queue)
     _heard_event: asyncio.Event = field(default_factory=asyncio.Event)
     _reply_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -182,8 +185,13 @@ class CommandSession:
             self._cap_handle.cancel()
         await self.decoder.close_input()
 
-    async def chunk_reply(self) -> dict[str, Any]:
-        """The answer to a chunk: listening, or - once the command has ended - the command."""
+    async def chunk_reply(self, *, early_signal: bool = False) -> dict[str, Any]:
+        """The answer to a chunk: listening, or - once the command has ended - the command.
+
+        `early_signal` (protocol 5): while one request already waits for the text, another one
+        answers "recognizing" at once - the watch stops listening a moment sooner, ended by the
+        VAD; the one waiting still brings the text. Older apps do not know the state: all wait.
+        """
         loop = asyncio.get_running_loop()
         # After "final" a missing chunk is on its way: wait for it within the one 4 s wait, not
         # just the grace - an answer at once would have the watch repeat "final" for nothing
@@ -199,9 +207,15 @@ class CommandSession:
                     await self._ended_event.wait()
         if not self._heard_event.is_set() and not self._input_closed:
             return {"state": "listening", "speech": self.speech}
-        with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(max(0.0, deadline - loop.time())):
-                await self._heard_event.wait()
+        if early_signal and self._heard_waiters and not self._heard_event.is_set():
+            return {"state": "recognizing"}
+        self._heard_waiters += 1
+        try:
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(max(0.0, deadline - loop.time())):
+                    await self._heard_event.wait()
+        finally:
+            self._heard_waiters -= 1
         if self.error is not None:
             raise SessionError(self.error, self.error_status)
         if self.heard:

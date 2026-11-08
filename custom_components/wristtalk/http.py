@@ -21,6 +21,7 @@ from .const import (
     HEADER_TEXT_ONLY,
     MIN_PROTOCOL,
     PROTOCOL,
+    RECOGNIZING_PROTOCOL,
     SUBENTRY_WATCH,
     WATCH_KEY_HASH,
 )
@@ -242,7 +243,8 @@ class CommandView(HomeAssistantView):
             await session.feed(
                 position, body, final=request.headers.get(HEADER_FINAL) == "1"
             )
-            response = _reply(await session.chunk_reply())
+            early = int(request.headers[HEADER_PROTOCOL]) >= RECOGNIZING_PROTOCOL
+            response = _reply(await session.chunk_reply(early_signal=early))
         except SessionError as err:
             response = _error(err.code, err.status)
         return _answer(hass, request, response)
