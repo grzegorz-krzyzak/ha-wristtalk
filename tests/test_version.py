@@ -1,4 +1,4 @@
-"""The version follows the rules in docs/design.md, section 5 (the only place they are written)."""
+"""Until 1.0 the middle number of the version is the protocol number."""
 
 import json
 from pathlib import Path
