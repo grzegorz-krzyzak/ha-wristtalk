@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 import shutil
+import struct
 import subprocess
 import time
 from typing import Any
@@ -25,7 +26,8 @@ from pytest_homeassistant_custom_component.common import async_capture_events
 
 from custom_components.wristtalk import CONF_USER_ID
 from custom_components.wristtalk.const import CONF_PIPELINE, DOMAIN
-from custom_components.wristtalk.decoder import FfmpegDecoder, async_compress_speech
+from custom_components.wristtalk.decoder import FfmpegDecoder
+from custom_components.wristtalk.speech import FfmpegEncoder, SpeechStream
 
 from .test_pairing import (
     HEADERS,
@@ -85,6 +87,10 @@ class FakePipeline:
     tts_engine: str | None = "tts.fake"
     synthesized: list[str] = field(default_factory=list)
     nothing_on_cut: bool = False  # when cancelled, still reports "nothing recognised"
+    agent_error: bool = False  # the agent fails after it started
+    # The TTS audio as the test hands it out (an exception: synthesis fails there); None: REPLY_AUDIO
+    tts_queue: asyncio.Queue | None = None
+    encoders: list[PassthroughEncoder] = field(default_factory=list)
 
     async def __call__(
         self, hass, *, context, event_callback, stt_stream, end_stage, **kwargs
@@ -133,6 +139,14 @@ class FakePipeline:
                 PipelineEventType.STT_END, {"stt_output": {"text": self.heard}}
             )
         )
+        event_callback(PipelineEvent(PipelineEventType.INTENT_START, {}))
+        if self.agent_error:
+            event_callback(
+                PipelineEvent(
+                    PipelineEventType.ERROR, {"code": "intent-failed", "message": "x"}
+                )
+            )
+            return
         if self.hold_reply is not None:
             try:
                 await self.hold_reply.wait()
@@ -154,6 +168,8 @@ class FakePipeline:
 class FakeTtsStream:
     """tts.async_create_stream: records what the integration asked to speak."""
 
+    extension = "mp3"
+
     def __init__(self, fake: FakePipeline, engine, language, options) -> None:
         self._fake = fake
         self.options = options
@@ -165,8 +181,63 @@ class FakeTtsStream:
     async def async_stream_result(self):
         if self._fake.hold_tts is not None:
             await self._fake.hold_tts.wait()
+        if (queue := self._fake.tts_queue) is not None:
+            while (chunk := await queue.get()) is not None:
+                if isinstance(chunk, Exception):
+                    raise chunk
+                yield chunk
+            return
+        # Cut inside a page: the pages are found across reads
         yield REPLY_AUDIO[:10]
         yield REPLY_AUDIO[10:]
+
+
+class PassthroughEncoder:
+    """Stands in for ffmpeg: what the TTS gives (Ogg pages made by the test) comes out as it is."""
+
+    def __init__(self, fake: FakePipeline, binary, extension, bitrate) -> None:
+        self.extension = extension
+        self.bitrate = bitrate
+        self.stopped = False
+        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        fake.encoders.append(self)
+
+    async def start(self) -> None:
+        pass
+
+    async def feed(self, data: bytes) -> None:
+        await self._queue.put(data)
+
+    async def close_input(self) -> None:
+        await self._queue.put(None)
+
+    async def output(self):
+        while (chunk := await self._queue.get()) is not None:
+            yield chunk
+
+    async def succeeded(self) -> bool:
+        return not self.stopped
+
+    async def stop(self) -> None:
+        if not self.stopped:
+            self.stopped = True
+            await self._queue.put(None)
+
+
+def ogg_page(granule: int, body: bytes = b"\x00" * 100, *, eos: bool = False) -> bytes:
+    """One Ogg page (CRC not filled - nobody checks it here)."""
+    lacing = [255] * (len(body) // 255) + [len(body) % 255]
+    return (
+        b"OggS"
+        + bytes([0, 0x04 if eos else 0])
+        + struct.pack("<qIII", granule, 1, 0, 0)
+        + bytes([len(lacing), *lacing])
+        + body
+    )
+
+
+SECOND = 48000  # Opus granules
+HEADER_PAGES = ogg_page(0, b"OpusHead" + b"\x00" * 11) + ogg_page(0, b"OpusTags")
 
 
 @dataclass
@@ -176,7 +247,8 @@ class FakeTtsPipeline:
     tts_voice: str | None = "MarekNeural"
 
 
-REPLY_AUDIO = b"OggS" + b"\x00" * 2000
+# A short reply: 2 s of speech, the end flag on the last page
+REPLY_AUDIO = HEADER_PAGES + ogg_page(SECOND) + ogg_page(2 * SECOND, eos=True)
 
 
 @pytest.fixture
@@ -200,6 +272,12 @@ def pipeline() -> FakePipeline:
         patch(
             "custom_components.wristtalk.assist_satellite.async_get_pipeline",
             lambda hass, pipeline_id=None: FakeTtsPipeline(fake.tts_engine),
+        ),
+        patch(
+            "custom_components.wristtalk.assist_satellite.create_encoder",
+            lambda binary, extension, bitrate: PassthroughEncoder(
+                fake, binary, extension, bitrate
+            ),
         ),
     ):
         yield fake
@@ -236,6 +314,20 @@ async def _chunk(
     return response.status, await response.json()
 
 
+async def _piece(watch, session: str, offset: int) -> tuple[int, bytes]:
+    response = await watch["client"].get(
+        f"/api/wristtalk/v1/audio/{session}/{offset}", headers=watch["headers"]
+    )
+    return response.status, await response.read()
+
+
+async def _audio(watch, session: str) -> tuple[int, bytes]:
+    response = await watch["client"].get(
+        f"/api/wristtalk/v1/audio/{session}", headers=watch["headers"]
+    )
+    return response.status, await response.read()
+
+
 async def test_watch_device_and_entities(hass: HomeAssistant, entry, watch) -> None:
     (device,) = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
     assert (DOMAIN, WATCH["unique_id"]) in device.identifiers
@@ -256,7 +348,7 @@ async def test_watch_device_and_entities(hass: HomeAssistant, entry, watch) -> N
 async def test_command_end_to_end(hass: HomeAssistant, watch, pipeline, entry) -> None:
     assert await _chunk(watch, "a1", 0, b"abc") == (
         200,
-        {"state": "listening", "speech": False, "protocol": 5},
+        {"state": "listening", "speech": False, "protocol": 6},
     )
     status, body = await _chunk(watch, "a1", 3, b"def" + END)
     assert (status, body["state"], body["heard"]) == (
@@ -268,7 +360,7 @@ async def test_command_end_to_end(hass: HomeAssistant, watch, pipeline, entry) -
     reply = await watch["client"].post(
         "/api/wristtalk/v1/reply/a1", headers=watch["headers"]
     )
-    assert await reply.json() == {"reply": "Jest 21:37.", "audio": True, "protocol": 5}
+    assert await reply.json() == {"reply": "Jest 21:37.", "audio": True, "protocol": 6}
 
     audio = await watch["client"].get(
         "/api/wristtalk/v1/audio/a1", headers=watch["headers"]
@@ -286,12 +378,9 @@ async def test_command_end_to_end(hass: HomeAssistant, watch, pipeline, entry) -
     assert pipeline.synthesized == ["Jest 21:37."]
     ((engine, language, options),) = pipeline.tts_calls
     assert (engine, language) == ("tts.fake", "pl")
-    assert options == {
-        "preferred_format": "opus",
-        "preferred_sample_rate": 16000,
-        "preferred_sample_channels": 1,
-        "voice": "MarekNeural",
-    }
+    # No format asked: Home Assistant gives MP3 (the cloud engine's own), ffmpeg makes the Opus
+    assert options == {"voice": "MarekNeural"}
+    assert [(e.extension, e.bitrate) for e in pipeline.encoders] == [("mp3", "10k")]
     # No instruction is added to the agent (like Voice PE)
     assert run["conversation_extra_system_prompt"] is None
     # Chunks after "heard" are ignored without an error
@@ -387,7 +476,7 @@ async def test_third_stt_failure_in_a_row_is_an_error(
         assert (await _chunk(watch, session, 0, END))[1]["state"] == "nothing"
     assert await _chunk(watch, "a6", 0, END) == (
         424,
-        {"error": "stt_failed", "protocol": 5},
+        {"error": "stt_failed", "protocol": 6},
     )
 
 
@@ -447,7 +536,7 @@ async def test_the_replaced_command_ends_before_the_new_one(
     status, body = await _chunk(watch, "a2", 0, END)
     assert (status, body) == (
         200,
-        {"state": "heard", "heard": "Która jest godzina?", "protocol": 5},
+        {"state": "heard", "heard": "Która jest godzina?", "protocol": 6},
     )
 
 
@@ -461,19 +550,26 @@ async def test_rate_limit(hass: HomeAssistant, watch, pipeline) -> None:
             await hass.async_block_till_done()
         assert (await _chunk(watch, "a3", 0, END)) == (
             429,
-            {"error": "too_many_commands", "protocol": 5},
+            {"error": "too_many_commands", "protocol": 6},
         )
 
 
 async def test_limits(hass: HomeAssistant, watch, pipeline) -> None:
     status, body = await _chunk(watch, "a1", 0, b"x" * (16 * 1024 + 1))
     assert (status, body["error"]) == (413, "chunk_too_large")
-    await _chunk(watch, "a1", 0, END)
-    with patch("custom_components.wristtalk.session.MAX_AUDIO_BYTES", 100):
+    with patch("custom_components.wristtalk.speech.MAX_AUDIO_BYTES", 200):
+        await _chunk(watch, "a1", 0, END)
         audio = await watch["client"].get(
             "/api/wristtalk/v1/audio/a1", headers=watch["headers"]
         )
-    assert (audio.status, (await audio.json())["error"]) == (413, "audio_too_large")
+        assert (audio.status, (await audio.json())["error"]) == (
+            413,
+            "audio_too_large",
+        )
+        # In pieces: the pages within the cap, then cut
+        status, piece = await _piece(watch, "a1", 0)
+        assert (status, piece) == (200, REPLY_AUDIO[: len(HEADER_PAGES)])
+        assert (await _piece(watch, "a1", len(piece)))[0] == 410
 
 
 async def test_requests_need_the_key_and_a_known_session(
@@ -681,7 +777,7 @@ async def test_removed_while_listening(
     await _remove_watch(hass, entry)
     assert await _chunk(watch, "a1", 3, b"def") == (
         401,
-        {"error": "unauthorized", "protocol": 5},
+        {"error": "unauthorized", "protocol": 6},
     )
 
 
@@ -737,7 +833,7 @@ async def test_removed_while_recognising(
     pipeline.hold_stt.set()
     await hass.async_block_till_done()
     # Answered at once (not after the STT wait), with what makes the watch pair again
-    assert await request == (401, {"error": "unauthorized", "protocol": 5})
+    assert await request == (401, {"error": "unauthorized", "protocol": 6})
     assert pipeline.synthesized == []
     reply = await watch["client"].post(
         "/api/wristtalk/v1/reply/a1", headers=watch["headers"]
@@ -745,49 +841,21 @@ async def test_removed_while_recognising(
     assert reply.status == 401
 
 
-async def test_reply_audio_stays_as_it_came_when_ffmpeg_cannot_compress_it() -> None:
-    """No ffmpeg, or audio it cannot read: the watch still gets the reply's voice."""
-    assert (
-        await async_compress_speech("/nonexistent/ffmpeg", REPLY_AUDIO, "16k")
-        == REPLY_AUDIO
-    )
-    if shutil.which("ffmpeg"):
-        assert await async_compress_speech("ffmpeg", b"not ogg", "16k") == b"not ogg"
-
-
-@pytest.mark.skipif(
-    shutil.which("ffmpeg") is None, reason="ffmpeg not installed (runs in CI)"
-)
-async def test_reply_audio_is_compressed_to_speech_bitrate() -> None:
-    """A reply as a TTS engine gives it (Ogg/Opus at a music bitrate) -> Ogg/Opus 16 kbit/s, smaller."""
-    ogg = subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:duration=3",
-            "-ar",
-            "48000",
-            "-ac",
-            "1",
-            "-c:a",
-            "libopus",
-            "-b:a",
-            "96k",
-            "-f",
-            "ogg",
-            "pipe:1",
-        ],
-        check=True,
-        capture_output=True,
-    ).stdout
-    compressed = await async_compress_speech("ffmpeg", ogg, "16k")
-    assert compressed.startswith(b"OggS")
-    assert len(compressed) < len(ogg) / 3
+async def test_no_ffmpeg_means_no_voice(hass: HomeAssistant, watch, pipeline) -> None:
+    """ffmpeg missing or not starting: the reply text stays, the voice is "no audio"."""
+    with patch(
+        "custom_components.wristtalk.assist_satellite.create_encoder",
+        lambda binary, extension, bitrate: FfmpegEncoder(
+            "/nonexistent/ffmpeg", extension, bitrate
+        ),
+    ):
+        await _chunk(watch, "a1", 0, END)
+        reply = await watch["client"].post(
+            "/api/wristtalk/v1/reply/a1", headers=watch["headers"]
+        )
+        assert (await reply.json())["reply"] == "Jest 21:37."
+        assert (await _piece(watch, "a1", 0))[0] == 404
+        assert (await _audio(watch, "a1"))[0] == 404
 
 
 async def test_audio_answers_waiting_while_the_voice_is_made(
@@ -818,30 +886,17 @@ async def test_reply_voice_quality_per_watch(
         "select", DOMAIN, f"{subentry_id}-speech_quality"
     )
     assert hass.states.get(entity_id).state == "fast"
-    bitrates: list[str] = []
-
-    async def compress(binary: str, audio: bytes, bitrate: str) -> bytes:
-        bitrates.append(bitrate)
-        return audio
-
-    with patch(
-        "custom_components.wristtalk.assist_satellite.async_compress_speech", compress
-    ):
-        await _chunk(watch, "a1", 0, END)
-        await watch["client"].get(
-            "/api/wristtalk/v1/audio/a1", headers=watch["headers"]
-        )
-        await hass.services.async_call(
-            "select",
-            "select_option",
-            {"entity_id": entity_id, "option": "best"},
-            blocking=True,
-        )
-        await _chunk(watch, "a2", 0, END)
-        await watch["client"].get(
-            "/api/wristtalk/v1/audio/a2", headers=watch["headers"]
-        )
-    assert bitrates == ["10k", "24k"]
+    await _chunk(watch, "a1", 0, END)
+    await _audio(watch, "a1")
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {"entity_id": entity_id, "option": "best"},
+        blocking=True,
+    )
+    await _chunk(watch, "a2", 0, END)
+    await _audio(watch, "a2")
+    assert [encoder.bitrate for encoder in pipeline.encoders] == ["10k", "24k"]
 
 
 async def test_a_late_chunk_of_an_ended_command_starts_nothing(
@@ -996,7 +1051,7 @@ async def test_recording_limit(hass: HomeAssistant, watch, pipeline) -> None:
         assert (await _chunk(watch, "a1", 0, b"abcdef"))[0] == 200
         assert await _chunk(watch, "a1", 6, b"ghijk") == (
             413,
-            {"error": "recording_too_large", "protocol": 5},
+            {"error": "recording_too_large", "protocol": 6},
         )
     # The input is closed - the command is what came before
     assert (await _chunk(watch, "a1", 6, b""))[1]["state"] == "heard"
@@ -1020,7 +1075,7 @@ async def test_waiting_chunks_limit(hass: HomeAssistant, watch, pipeline) -> Non
     assert (await _chunk(watch, "a1", 60, b"x"))[0] == 200
     assert await _chunk(watch, "a1", 70, b"x") == (
         413,
-        {"error": "too_many_chunks", "protocol": 5},
+        {"error": "too_many_chunks", "protocol": 6},
     )
 
 
@@ -1094,3 +1149,311 @@ async def test_two_first_chunks_at_once_wait_for_the_decoder(
     assert [status for status, _ in results] == [200, 200]
     assert "heard" in {body["state"] for _, body in results}
     assert pipeline.runs[0]["audio"] == b"abcdef" + END
+
+
+# --- the voice in pieces while it is being made (protocol 6) --------------------------------------
+
+
+async def _heard_with_voice_queue(watch, pipeline) -> asyncio.Queue:
+    pipeline.tts_queue = asyncio.Queue()
+    await _chunk(watch, "a1", 0, END)
+    return pipeline.tts_queue
+
+
+async def _not_answered(request: asyncio.Future) -> bool:
+    await asyncio.sleep(0.05)
+    return not request.done()
+
+
+async def test_a_short_reply_comes_whole_in_one_piece(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    await _chunk(watch, "a1", 0, END)
+    assert await _piece(watch, "a1", 0) == (200, REPLY_AUDIO)
+    # Asked past the end (the watch does not, it sees the end flag): nothing more
+    assert (await _piece(watch, "a1", len(REPLY_AUDIO)))[0] == 410
+    # The old request still gets it whole (apps on 2-5)
+    assert await _audio(watch, "a1") == (200, REPLY_AUDIO)
+
+
+async def test_the_voice_in_pieces_while_it_is_made(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    queue = await _heard_with_voice_queue(watch, pipeline)
+    one = ogg_page(SECOND)
+    await queue.put(HEADER_PAGES + one)
+    first = asyncio.ensure_future(_piece(watch, "a1", 0))
+    # The first answer waits for 3 s of speech: the watch's start margin in one request
+    assert await _not_answered(first)
+    three = ogg_page(3 * SECOND)
+    await queue.put(three)
+    assert await first == (200, HEADER_PAGES + one + three)
+    offset = len(HEADER_PAGES + one + three)
+    later = asyncio.ensure_future(_piece(watch, "a1", offset))
+    assert await _not_answered(later)
+    # A later one gives what is new at once
+    four = ogg_page(4 * SECOND)
+    await queue.put(four)
+    assert await later == (200, four)
+    end = ogg_page(5 * SECOND, eos=True)
+    await queue.put(end)
+    await queue.put(None)
+    assert await _piece(watch, "a1", offset + len(four)) == (200, end)
+    assert await _audio(watch, "a1") == (200, HEADER_PAGES + one + three + four + end)
+
+
+async def test_a_piece_comes_whole_pages_only(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    queue = await _heard_with_voice_queue(watch, pipeline)
+    three = ogg_page(3 * SECOND)
+    await queue.put(HEADER_PAGES + three[:20])
+    with patch("custom_components.wristtalk.session.LONG_POLL_SECONDS", 0.05):
+        # Not 3 s yet: after the wait, what there is - the whole pages
+        assert await _piece(watch, "a1", 0) == (200, HEADER_PAGES)
+    await queue.put(three[20:])
+    assert await _piece(watch, "a1", len(HEADER_PAGES)) == (200, three)
+
+
+async def test_a_piece_waits_then_202(hass: HomeAssistant, watch, pipeline) -> None:
+    await _heard_with_voice_queue(watch, pipeline)
+    with patch("custom_components.wristtalk.session.LONG_POLL_SECONDS", 0.05):
+        assert (await _piece(watch, "a1", 0))[0] == 202
+
+
+async def test_one_piece_is_at_most_64_kb(hass: HomeAssistant, watch, pipeline) -> None:
+    queue = await _heard_with_voice_queue(watch, pipeline)
+    pages = b"".join(ogg_page(n * SECOND, b"\x00" * 5000) for n in range(1, 21))
+    await queue.put(HEADER_PAGES + pages)
+    status, piece = await _piece(watch, "a1", 0)
+    assert status == 200
+    # Whole pages only: one more page (about 5 kB) would pass 64 kB
+    assert 64 * 1024 - 5100 < len(piece) <= 64 * 1024
+    assert (HEADER_PAGES + pages).startswith(piece)
+
+
+async def test_synthesis_failing_midway_cuts_the_voice(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    queue = await _heard_with_voice_queue(watch, pipeline)
+    three = ogg_page(3 * SECOND)
+    await queue.put(HEADER_PAGES + three)
+    await queue.put(RuntimeError("tts broke"))
+    assert await _piece(watch, "a1", 0) == (200, HEADER_PAGES + three)
+    # What came is played; then "cut", not the end - the watch says the voice was cut off
+    status, body = await _piece(watch, "a1", len(HEADER_PAGES + three))
+    assert status == 410
+    assert b"audio_cut" in body
+    # Apps on 2-5: no voice, as when synthesis failed before
+    assert (await _audio(watch, "a1"))[0] == 404
+
+
+async def test_synthesis_failing_before_any_byte_is_no_voice(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    queue = await _heard_with_voice_queue(watch, pipeline)
+    await queue.put(RuntimeError("tts down"))
+    status, body = await _piece(watch, "a1", 0)
+    assert status == 404
+    assert b"no_audio" in body
+
+
+async def test_ffmpeg_starts_while_the_agent_thinks(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    pipeline.hold_reply = asyncio.Event()
+    assert (await _chunk(watch, "a1", 0, END))[1]["state"] == "heard"
+    await asyncio.sleep(0.05)
+    # Before the reply text: ffmpeg is up, waiting
+    (encoder,) = pipeline.encoders
+    assert not encoder.stopped
+    pipeline.hold_reply.set()
+    assert await _piece(watch, "a1", 0) == (200, REPLY_AUDIO)
+
+
+async def test_ffmpeg_is_closed_when_no_reply_comes(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    pipeline.agent_error = True
+    await _chunk(watch, "a1", 0, END)
+    await hass.async_block_till_done()
+    (encoder,) = pipeline.encoders
+    assert encoder.stopped
+    assert (await _piece(watch, "a1", 0))[0] == 503
+
+
+async def test_text_only_starts_no_ffmpeg(hass: HomeAssistant, watch, pipeline) -> None:
+    await _chunk(watch, "a1", 0, END, **{"X-WT-Text-Only": "1"})
+    await hass.async_block_till_done()
+    assert pipeline.encoders == []
+    assert (await _piece(watch, "a1", 0))[0] == 404
+
+
+async def test_a_new_command_closes_the_voice_of_the_last(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    await _heard_with_voice_queue(watch, pipeline)
+    await _chunk(watch, "a2", 0, b"abc")
+    assert pipeline.encoders[0].stopped
+    assert (await _piece(watch, "a1", 0))[0] == 404  # unknown session
+
+
+async def test_piece_offset_must_be_a_number(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    await _chunk(watch, "a1", 0, END)
+    assert (await _piece(watch, "a1", -1))[0] in (400, 404)
+    response = await watch["client"].get(
+        "/api/wristtalk/v1/audio/a1/x", headers=watch["headers"]
+    )
+    assert response.status == 400
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None, reason="ffmpeg not installed (runs in CI)"
+)
+async def test_real_ffmpeg_gives_pages_before_the_input_ends(
+    hass: HomeAssistant,
+) -> None:
+    """MP3 as the TTS gives it, fed slowly: Ogg/Opus pages come out before the input ends, and the
+    first piece holds 3 s of speech."""
+    mp3 = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=8",
+            "-ar",
+            "24000",
+            "-ac",
+            "1",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "64k",
+            "-f",
+            "mp3",
+            "pipe:1",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    fed_all = asyncio.Event()
+
+    async def say(text: str):
+        for at in range(0, len(mp3), 2048):
+            yield mp3[at : at + 2048]
+            await asyncio.sleep(0.02)
+        fed_all.set()
+
+    speech = SpeechStream(
+        FfmpegEncoder("ffmpeg", "mp3", "10k"),
+        say,
+        lambda coro: hass.async_create_background_task(coro, "test voice"),
+        "t",
+    )
+    await speech.start()
+    speech.speak("x")
+    loop = asyncio.get_running_loop()
+    first = await speech.piece(0, loop.time() + 4)
+    assert first.startswith(b"OggS")
+    assert not fed_all.is_set()
+    whole = await speech.whole(loop.time() + 10)
+    assert speech.ended
+    assert whole.startswith(first)
+    # The last page has the end flag; 8 s of speech at 10 kbit/s is about 10 kB
+    last = whole.rindex(b"OggS")
+    assert whole[last + 5] & 0x04
+    assert len(whole) < 20000
+    await speech.close()
+
+
+async def test_synthesis_failing_leaves_out_the_end_flag(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    """ffmpeg ends as usual after a synthesis failure; its end page would read as "the end"."""
+    queue = await _heard_with_voice_queue(watch, pipeline)
+    three = ogg_page(3 * SECOND)
+    await queue.put(HEADER_PAGES + three + ogg_page(4 * SECOND, eos=True))
+    await queue.put(RuntimeError("tts broke"))
+    assert await _piece(watch, "a1", 0) == (200, HEADER_PAGES + three)
+    assert (await _piece(watch, "a1", len(HEADER_PAGES + three)))[0] == 410
+
+
+async def test_an_empty_reply_has_no_voice(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    pipeline.reply = ""
+    await _chunk(watch, "a1", 0, END)
+    assert (await _piece(watch, "a1", 0))[0] == 404
+    assert pipeline.encoders[0].stopped
+
+
+async def test_voice_without_the_agent_start_event(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    """A pipeline that does not report the agent's start: ffmpeg starts with the reply text."""
+    original = pipeline.__call__
+
+    async def without_intent_start(hass_, *, event_callback, **kwargs):
+        def callback(event):
+            if event.type is not PipelineEventType.INTENT_START:
+                event_callback(event)
+
+        await original(hass_, event_callback=callback, **kwargs)
+
+    with patch(
+        "homeassistant.components.assist_satellite.entity.async_pipeline_from_audio_stream",
+        without_intent_start,
+    ):
+        await _chunk(watch, "a1", 0, END)
+        assert await _piece(watch, "a1", 0) == (200, REPLY_AUDIO)
+
+
+async def test_the_whole_voice_waits_then_202(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    await _heard_with_voice_queue(watch, pipeline)
+    with patch("custom_components.wristtalk.session.LONG_POLL_SECONDS", 0.05):
+        assert (await _audio(watch, "a1"))[0] == 202
+
+
+async def test_ffmpeg_ready_after_the_command_failed_is_closed(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    """ffmpeg still starting when the agent fails: closed once it is up."""
+    started = asyncio.Event()
+
+    class SlowEncoder(PassthroughEncoder):
+        async def start(self) -> None:
+            await started.wait()
+
+    pipeline.agent_error = True
+    with patch(
+        "custom_components.wristtalk.assist_satellite.create_encoder",
+        lambda binary, extension, bitrate: SlowEncoder(
+            pipeline, binary, extension, bitrate
+        ),
+    ):
+        await _chunk(watch, "a1", 0, END)
+        await asyncio.sleep(0.05)
+        started.set()
+        await hass.async_block_till_done()
+    assert pipeline.encoders[0].stopped
+
+
+async def test_synthesis_giving_nothing_is_given_up(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    """A TTS that stops giving audio: after a while what came is a cut voice, ffmpeg ends."""
+    queue = await _heard_with_voice_queue(watch, pipeline)
+    three = ogg_page(3 * SECOND)
+    await queue.put(HEADER_PAGES + three)
+    with patch("custom_components.wristtalk.speech.SYNTHESIS_STALL_SECONDS", 0.05):
+        assert await _piece(watch, "a1", 0) == (200, HEADER_PAGES + three)
+        await asyncio.sleep(0.1)
+        assert (await _piece(watch, "a1", len(HEADER_PAGES + three)))[0] == 410

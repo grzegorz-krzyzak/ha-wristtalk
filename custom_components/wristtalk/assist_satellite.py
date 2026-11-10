@@ -5,7 +5,7 @@ starting a conversation are not supported."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from homeassistant.components import tts
 from homeassistant.components.assist_pipeline import (
@@ -32,19 +32,12 @@ from .const import (
     SPEECH_QUALITY_BITRATES,
     SPEECH_QUALITY_DEFAULT,
 )
-from .decoder import async_compress_speech
 from .entity import WatchEntity
 from .select import entity_prefix
+from .speech import SpeechStream, create_encoder
 
 if TYPE_CHECKING:
     from .session import CommandSession
-
-# The watch plays Ogg/Opus only ("ogg" would give Vorbis)
-TTS_OPTIONS = {
-    tts.ATTR_PREFERRED_FORMAT: "opus",
-    tts.ATTR_PREFERRED_SAMPLE_RATE: 16000,
-    tts.ATTR_PREFERRED_SAMPLE_CHANNELS: 1,
-}
 
 
 async def async_setup_entry(
@@ -84,10 +77,6 @@ class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
     def vad_sensitivity_entity_id(self) -> str | None:
         return self._select_entity_id("vad_sensitivity")
 
-    @property
-    def tts_options(self) -> dict[str, Any] | None:
-        return TTS_OPTIONS
-
     def async_get_configuration(self) -> AssistSatelliteConfiguration:
         """No wake words - the watch starts a command with a button."""
         return AssistSatelliteConfiguration(
@@ -121,7 +110,7 @@ class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
 
         The pipeline's own streaming TTS stops at the agent's first words before a tool ("Checking
         ...", Home Assistant core#187933) while the reply text is complete - so the integration
-        speaks the reply text itself (async_synthesize): the voice always matches the screen.
+        speaks the reply text itself (async_prepare_speech): the voice always matches the screen.
         """
         self._session = session
         try:
@@ -134,24 +123,40 @@ class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
             if self._session is session:
                 self._session = None
 
-    async def async_synthesize(self, text: str) -> bytes | None:
-        """The reply text spoken with the watch pipeline's TTS engine and voice, as Ogg/Opus."""
+    async def async_prepare_speech(self, session_id: str) -> SpeechStream | None:
+        """The reply's voice, ready to speak: the TTS stream and ffmpeg started, waiting for the text.
+
+        No format is asked of the TTS: Home Assistant then gives MP3 - the Home Assistant Cloud
+        engine's own format, so nothing converts it before ffmpeg (asking for Opus cost a second
+        lossy pass and about 0.25 s, measured 2026-11-10). ffmpeg makes the watch's Ogg/Opus at the
+        watch's "Reply voice quality" - Home Assistant's own bitrate option is for MP3 only.
+        """
         pipeline = async_get_pipeline(self.hass, self._resolve_pipeline())
-        if not pipeline.tts_engine or not text:
+        if not pipeline.tts_engine:
             return None
-        options = dict(TTS_OPTIONS)
-        if pipeline.tts_voice:
-            options[tts.ATTR_VOICE] = pipeline.tts_voice
+        options = {tts.ATTR_VOICE: pipeline.tts_voice} if pipeline.tts_voice else {}
         stream = tts.async_create_stream(
             self.hass, pipeline.tts_engine, pipeline.tts_language, options
         )
-        stream.async_set_message(text)
-        audio = b"".join([chunk async for chunk in stream.async_stream_result()])
-        # Home Assistant's own bitrate option is for MP3 only; the reply goes to the watch through
-        # the phone at about 13 kB/s (measured on a fēnix 8, 2026-11-04 - a status reply was 114 kB)
-        return await async_compress_speech(
-            get_ffmpeg_manager(self.hass).binary, audio, self._speech_bitrate()
+
+        def say(text: str) -> AsyncIterator[bytes]:
+            stream.async_set_message(text)
+            return stream.async_stream_result()
+
+        speech = SpeechStream(
+            create_encoder(
+                get_ffmpeg_manager(self.hass).binary,
+                stream.extension,
+                self._speech_bitrate(),
+            ),
+            say,
+            lambda coro: self.hass.async_create_background_task(
+                coro, f"wristtalk voice {session_id}"
+            ),
+            session_id,
         )
+        await speech.start()
+        return speech
 
     def _speech_bitrate(self) -> str:
         """The watch's "Reply voice quality" select, the default when it is not there yet."""

@@ -3,7 +3,7 @@
 The watch posts Ogg/Opus chunks while the user speaks; they go through ffmpeg into the watch's
 Assist satellite pipeline. Home Assistant's VAD ends the command; the chunk request that sees it
 waits for speech-to-text and returns the command ("heard"). The reply text and the audio follow
-on separate requests.
+on separate requests; the audio in pieces while it is being made (protocol 6), or whole.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from homeassistant.components.assist_pipeline import PipelineEvent, PipelineEven
 from homeassistant.core import HomeAssistant
 
 from .decoder import Decoder
+from .speech import SpeechError, SpeechStream
 
 if TYPE_CHECKING:
     from .assist_satellite import WristTalkSatellite
@@ -35,7 +36,6 @@ MAX_RECORDING_BYTES = 256 * 1024
 # Chunks waiting for a missing one: the watch sends two at a time (security review 2026-11-07)
 MAX_PENDING_CHUNKS = 6
 MAX_COMMAND_SECONDS = 20.0
-MAX_AUDIO_BYTES = 256 * 1024
 COMMANDS_PER_MINUTE = 30
 # The last commands of a watch that have ended: a chunk of one of them arriving late (through the
 # phone a chunk can take 3.5 s) must not end the current command and start the old one again
@@ -88,8 +88,12 @@ class CommandSession:
     reply: str | None = None
     error: str | None = None
     error_status: int = 503
-    audio_data: bytes | None = None
     finished: bool = False
+    # The reply's voice: ffmpeg started when the agent starts (`_prepared`), speaking once the
+    # text is known (`voice`); `_voice_ready` once it is known whether there is a voice
+    voice: SpeechStream | None = None
+    _prepared: SpeechStream | None = None
+    _prepare_task: asyncio.Task[SpeechStream | None] | None = None
     _expected_offset: int = 0
     _pending: dict[int, bytes] = field(default_factory=dict)
     _input_closed: bool = False
@@ -101,7 +105,7 @@ class CommandSession:
     _queue: asyncio.Queue[bytes | None] = field(default_factory=asyncio.Queue)
     _heard_event: asyncio.Event = field(default_factory=asyncio.Event)
     _reply_event: asyncio.Event = field(default_factory=asyncio.Event)
-    _tts_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _voice_ready: asyncio.Event = field(default_factory=asyncio.Event)
     _ended_event: asyncio.Event = field(default_factory=asyncio.Event)
     _started: asyncio.Event = field(default_factory=asyncio.Event)
     _tasks: list[asyncio.Task[Any]] = field(default_factory=list)
@@ -119,10 +123,12 @@ class CommandSession:
         finally:
             self._started.set()
 
-    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
-        self._tasks.append(
-            self.hass.async_create_background_task(coro, f"wristtalk {self.session_id}")
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        task = self.hass.async_create_background_task(
+            coro, f"wristtalk {self.session_id}"
         )
+        self._tasks.append(task)
+        return task
 
     async def _read_pcm(self) -> None:
         async for chunk in self.decoder.pcm():
@@ -240,15 +246,20 @@ class CommandSession:
                 self.on_stt(False)
             self._heard_event.set()
             self._ended_event.set()
+        elif event.type is PipelineEventType.INTENT_START:
+            if not self.text_only and self._prepare_task is None:
+                # ffmpeg starts while the agent thinks: its start (about 0.45 s on a Home Assistant
+                # Green) is not added to the voice's wait
+                self._prepare_task = self._spawn(self._prepare_voice())
         elif event.type is PipelineEventType.INTENT_END:
             speech = data.get("intent_output", {}).get("response", {}).get("speech", {})
             self.reply = str(speech.get("plain", {}).get("speech") or "")
             self._reply_event.set()
             if self.text_only:
-                self._tts_event.set()
+                self._voice_ready.set()
             else:
-                # Synthesis starts the moment the text is known; audio() only collects it
-                self._spawn(self._synthesize(self.reply))
+                # Synthesis starts the moment the text is known; the audio requests only collect it
+                self._spawn(self._speak(self.reply))
         elif event.type is PipelineEventType.ERROR:
             code = str(data.get("code") or "error")
             if code == STT_FAILED_ERROR:
@@ -267,12 +278,30 @@ class CommandSession:
             else:
                 self._fail(code)
 
-    async def _synthesize(self, text: str) -> None:
+    async def _prepare_voice(self) -> SpeechStream | None:
         try:
-            self.audio_data = await self.satellite.async_synthesize(text)
+            self._prepared = await self.satellite.async_prepare_speech(self.session_id)
         except Exception:
-            _LOGGER.exception("WristTalk %s: speech synthesis failed", self.session_id)
-        self._tts_event.set()
+            _LOGGER.exception(
+                "WristTalk %s: the voice could not start", self.session_id
+            )
+            self._prepared = None
+        if self._prepared is not None and self.finished and self.reply is None:
+            # The command ended without a reply while ffmpeg was starting
+            await self._prepared.close()
+        return self._prepared
+
+    async def _speak(self, text: str) -> None:
+        if self._prepare_task is None:
+            self._prepare_task = self._spawn(self._prepare_voice())
+        speech = await self._prepare_task
+        if speech is not None:
+            if text:
+                speech.speak(text)
+                self.voice = speech
+            else:
+                await speech.close()
+        self._voice_ready.set()
 
     def _fail(self, code: str) -> None:
         self.error = code
@@ -283,7 +312,10 @@ class CommandSession:
         for event in (self._heard_event, self._reply_event, self._ended_event):
             event.set()
         if self.reply is None or self.text_only:
-            self._tts_event.set()
+            self._voice_ready.set()
+            if self._prepared is not None:
+                # No reply to speak: ffmpeg, started while the agent thought, is not needed
+                self._spawn(self._prepared.close())
 
     # --- reply out ----------------------------------------------------------------------------
 
@@ -300,21 +332,46 @@ class CommandSession:
             return {"state": "nothing"}
         return {"state": "waiting"}
 
-    async def audio(self) -> bytes:
-        """The ready reply audio (Ogg/Opus), at most MAX_AUDIO_BYTES; 202 while it is being made."""
+    async def _voice(self, deadline: float) -> SpeechStream:
+        """The reply's voice once it is known there is one, within the wait."""
         with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(LONG_POLL_SECONDS):
-                await self._tts_event.wait()
-        if not self._tts_event.is_set():
+            async with asyncio.timeout(
+                max(0.0, deadline - asyncio.get_running_loop().time())
+            ):
+                await self._voice_ready.wait()
+        if not self._voice_ready.is_set():
             raise SessionError("audio_waiting", 202)
-        data = self.audio_data
-        if data is None:
+        if self.voice is None:
             if self.error is not None:
                 raise SessionError(self.error, self.error_status)
             raise SessionError("no_audio", 404)
-        if len(data) > MAX_AUDIO_BYTES:
-            raise SessionError("audio_too_large", 413)
+        return self.voice
+
+    async def audio(self) -> bytes:
+        """The whole reply audio (Ogg/Opus) once it is made; 202 while it is (apps on 2-5)."""
+        deadline = asyncio.get_running_loop().time() + LONG_POLL_SECONDS
+        voice = await self._voice(deadline)
+        try:
+            data = await voice.whole(deadline)
+        except SpeechError as err:
+            raise SessionError(err.code, err.status) from err
         self.satellite.tts_response_finished()
+        return data
+
+    async def audio_piece(self, offset: int) -> bytes:
+        """The reply audio from `offset` while it is being made (protocol 6): whole Ogg pages.
+
+        The first answer waits for a few seconds of speech or the end, later ones for anything
+        new - up to 4 s, then 202. The end: the last page's end-of-stream flag; then 410.
+        """
+        deadline = asyncio.get_running_loop().time() + LONG_POLL_SECONDS
+        voice = await self._voice(deadline)
+        try:
+            data = await voice.piece(offset, deadline)
+        except SpeechError as err:
+            raise SessionError(err.code, err.status) from err
+        if voice.ended and offset + len(data) >= voice.size:
+            self.satellite.tts_response_finished()
         return data
 
     async def close(self) -> None:
@@ -331,6 +388,8 @@ class CommandSession:
         # Wait for the pipeline to unwind: what it still reports goes to the satellite's current
         # session, and the next command must not get it
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        if self._prepared is not None:
+            await self._prepared.close()
         if self.on_closed is not None:
             self.on_closed(self)
 

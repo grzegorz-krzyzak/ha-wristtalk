@@ -294,6 +294,39 @@ class AudioView(HomeAssistantView):
         )
 
 
+class AudioPieceView(HomeAssistantView):
+    """The reply audio from an offset while it is being made (protocol 6), whole Ogg pages."""
+
+    url = API_BASE + "/audio/{session_id}/{offset}"
+    name = "api:wristtalk:audio:piece"
+    requires_auth = False
+
+    async def get(
+        self, request: web.Request, session_id: str, offset: str
+    ) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        data, watch, error = _watch_context(hass, request, session_id)
+        if error is not None:
+            return error
+        try:
+            position = int(offset)
+        except ValueError:
+            position = -1
+        if position < 0:
+            return _error("invalid_request", HTTPStatus.BAD_REQUEST)
+        try:
+            piece = await data.sessions.get(watch.subentry_id, session_id).audio_piece(
+                position
+            )
+        except SessionError as err:
+            return _answer(hass, request, _error(err.code, err.status))
+        return _answer(
+            hass,
+            request,
+            web.Response(body=piece, content_type="application/octet-stream"),
+        )
+
+
 def async_register_views(hass: HomeAssistant) -> None:
     """Once per Home Assistant run - views cannot be unregistered."""
     if hass.data.get(f"{DOMAIN}_views"):
@@ -307,5 +340,6 @@ def async_register_views(hass: HomeAssistant) -> None:
         CommandView(),
         ReplyView(),
         AudioView(),
+        AudioPieceView(),
     ):
         hass.http.register_view(view)

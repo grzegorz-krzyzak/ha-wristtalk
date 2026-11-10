@@ -28,8 +28,9 @@ ISSUE_NEEDS_PAIRING: Final = "needs_pairing"
 # (the compatibility table is in the design notes). 2: every wait within 4 s, audio 202 while it is
 # being made. 3: `POST repair` - the watch's "Pair again"; an app on protocol 2 does not send it
 # and keeps working. The app is not public yet, so protocol 1 is no longer taken: an older app
-# hears "update the app" instead of working worse
-PROTOCOL: Final = 5
+# hears "update the app" instead of working worse. 6: `GET audio/<session>/<offset>` - the voice
+# in pieces while it is being made; apps on 2-5 get it whole as before
+PROTOCOL: Final = 6
 # From this protocol on the watch knows the chunk answer "recognizing" (the command has ended)
 RECOGNIZING_PROTOCOL: Final = 5
 MIN_PROTOCOL: Final = 2
