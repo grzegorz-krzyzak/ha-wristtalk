@@ -1221,6 +1221,22 @@ async def test_a_piece_waits_then_202(hass: HomeAssistant, watch, pipeline) -> N
         assert (await _piece(watch, "a1", 0))[0] == 202
 
 
+async def test_later_pieces_are_at_most_8_kb(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    """Once the watch plays, a piece is at most 8 kB: large ones received while playing crackled."""
+    queue = await _heard_with_voice_queue(watch, pipeline)
+    first = HEADER_PAGES + ogg_page(3 * SECOND)
+    await queue.put(first)
+    assert await _piece(watch, "a1", 0) == (200, first)
+    rest = b"".join(ogg_page(n * SECOND, b"\x00" * 1000) for n in range(4, 30))
+    await queue.put(rest)
+    status, piece = await _piece(watch, "a1", len(first))
+    assert status == 200
+    assert 7 * 1024 < len(piece) <= 8 * 1024
+    assert rest.startswith(piece)
+
+
 async def test_one_piece_is_at_most_64_kb(hass: HomeAssistant, watch, pipeline) -> None:
     queue = await _heard_with_voice_queue(watch, pipeline)
     pages = b"".join(ogg_page(n * SECOND, b"\x00" * 5000) for n in range(1, 21))

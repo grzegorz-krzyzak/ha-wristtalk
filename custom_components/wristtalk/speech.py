@@ -26,6 +26,10 @@ GRANULES_PER_SECOND = 48000
 START_MARGIN_SECONDS = 3
 # One answer carries at most this much (whole pages)
 MAX_PIECE_BYTES = 64 * 1024
+# ... and once the watch plays (a later answer) at most this much: received while playing, pieces of
+# 12-26 kB crackled now and then on the fēnix 8, up to 6.5 kB never (2026-11-10/11); 8 kB is the
+# watch player's buffer (about 5.5 s of speech at 10 kbit/s)
+MAX_LATER_PIECE_BYTES = 8 * 1024
 # The whole voice; past it the voice is cut (the simulator accepted 400 kB; 256 kB is about 3.5 min
 # of speech at 10 kbit/s)
 MAX_AUDIO_BYTES = 256 * 1024
@@ -302,7 +306,7 @@ class SpeechStream:
 
     def _piece_end(self, offset: int) -> int:
         """The end of the last whole page within one answer from `offset`."""
-        limit = offset + MAX_PIECE_BYTES
+        limit = offset + (MAX_PIECE_BYTES if offset == 0 else MAX_LATER_PIECE_BYTES)
         index = bisect_right(self._page_ends, limit) - 1
         end = self._page_ends[index] if index >= 0 else 0
         if end <= offset:
@@ -324,7 +328,7 @@ class SpeechStream:
             have = self._pages_end - offset
             if (
                 self.done
-                or have >= MAX_PIECE_BYTES
+                or have >= (MAX_PIECE_BYTES if offset == 0 else MAX_LATER_PIECE_BYTES)
                 or (
                     have > 0
                     and (
