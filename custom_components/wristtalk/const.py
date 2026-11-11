@@ -50,10 +50,11 @@ EVENT_COMMAND_RUN: Final = "wristtalk_command_run"
 
 # The reply's voice, per watch: Opus bitrate - smaller arrives sooner through the phone (about
 # 13 kB/s on a fēnix 8), larger sounds better
-# Heard on the watch speaker (2026-11-05): hardly any difference, the house status 20 / 30 / 43 kB -
-# so "fast" is the default
+# "balanced" is the default since 0.6.2: on the fēnix 8's speaker "fast" sounds rougher, "balanced"
+# clearly better (heard 2026-11-12); with the voice in pieces it costs only the first piece - about
+# 1.5-2 kB more, 0.15 s by the phone (measured)
 SPEECH_QUALITY_BITRATES: Final = {"fast": "10k", "balanced": "16k", "best": "24k"}
-SPEECH_QUALITY_DEFAULT: Final = "fast"
+SPEECH_QUALITY_DEFAULT: Final = "balanced"
 
 # Pairing
 # 3 minutes: enough to go to Home Assistant and type the code (shorter since 0.1.6; with the code

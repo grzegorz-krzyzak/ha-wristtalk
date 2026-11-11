@@ -380,7 +380,7 @@ async def test_command_end_to_end(hass: HomeAssistant, watch, pipeline, entry) -
     assert (engine, language) == ("tts.fake", "pl")
     # No format asked: Home Assistant gives MP3 (the cloud engine's own), ffmpeg makes the Opus
     assert options == {"voice": "MarekNeural"}
-    assert [(e.extension, e.bitrate) for e in pipeline.encoders] == [("mp3", "10k")]
+    assert [(e.extension, e.bitrate) for e in pipeline.encoders] == [("mp3", "16k")]
     # No instruction is added to the agent (like Voice PE)
     assert run["conversation_extra_system_prompt"] is None
     # Chunks after "heard" are ignored without an error
@@ -880,12 +880,12 @@ async def test_audio_answers_waiting_while_the_voice_is_made(
 async def test_reply_voice_quality_per_watch(
     hass: HomeAssistant, watch, pipeline, entry
 ) -> None:
-    """The watch's select sets the Opus bitrate; "Fast" (10 kbit/s) until changed."""
+    """The watch's select sets the Opus bitrate; "Balanced" (16 kbit/s) until changed."""
     (subentry_id,) = entry.subentries
     entity_id = er.async_get(hass).async_get_entity_id(
         "select", DOMAIN, f"{subentry_id}-speech_quality"
     )
-    assert hass.states.get(entity_id).state == "fast"
+    assert hass.states.get(entity_id).state == "balanced"
     await _chunk(watch, "a1", 0, END)
     await _audio(watch, "a1")
     await hass.services.async_call(
@@ -896,7 +896,7 @@ async def test_reply_voice_quality_per_watch(
     )
     await _chunk(watch, "a2", 0, END)
     await _audio(watch, "a2")
-    assert [encoder.bitrate for encoder in pipeline.encoders] == ["10k", "24k"]
+    assert [encoder.bitrate for encoder in pipeline.encoders] == ["16k", "24k"]
 
 
 async def test_a_late_chunk_of_an_ended_command_starts_nothing(

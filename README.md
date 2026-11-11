@@ -52,8 +52,8 @@ extra instruction with a normal command. The reply style is your agent's: if you
 replies on the watch, put it in the agent's prompt or pick a separate pipeline for the watch.
 
 Each watch's device card has its settings: the **Assistant** (pipeline), **Finished speaking
-detection** and **Reply voice quality** - *Fast* (the default: smaller, arrives sooner through
-the phone), *Balanced* or *Best* (larger; worth it with headphones).
+detection** and **Reply voice quality** - *Fast* (smaller, a little rougher), *Balanced* (the
+default) or *Best* (the largest).
 
 Home Assistant's `extra_system_prompt` mechanism could carry a watch-specific instruction (e.g.
 "answer shorter"), but WristTalk does not use it - we do not know how it would work with your agent
