@@ -35,6 +35,7 @@ from .const import (
     CONF_PIPELINE,
     CONF_URL,
     DOMAIN,
+    SPONSORS_URL,
     SUBENTRY_WATCH,
 )
 from .pairing import PairingError, WatchRequest
@@ -133,6 +134,7 @@ class WristTalkConfigFlow(ConfigFlow, domain=DOMAIN):
                 (user_input or {}).get(CONF_URL),
             ),
             errors=errors,
+            description_placeholders={"sponsors": SPONSORS_URL},
         )
 
     @staticmethod
@@ -175,7 +177,10 @@ class WristTalkOptionsFlow(OptionsFlow):
             errors=errors,
             # The address in full, as a link under its field: the dropdown cuts a long one, and on a phone the
             # link opens in the browser, where the address bar copies it in one touch
-            description_placeholders={CONF_URL: options.get(CONF_URL) or "-"},
+            description_placeholders={
+                CONF_URL: options.get(CONF_URL) or "-",
+                "sponsors": SPONSORS_URL,
+            },
         )
 
 

@@ -10,7 +10,7 @@
         },
         "data_description": {
           "pipeline": "Potok Assista, którego używa nowy zegarek; każdy zegarek może wybrać własny w swojej karcie urządzenia.",
-          "url": "Zegarek łączy się z Home Assistant przez telefon, a ten wymaga HTTPS z zaufanym certyfikatem (np. Home Assistant Cloud). Zwykłe http:// nie działa, także w domu.\n\nWristTalk jest darmowy. Jeśli Ci się przydaje, możesz go wesprzeć na [GitHub Sponsors](https://github.com/sponsors/grzegorz-krzyzak)."
+          "url": "Zegarek łączy się z Home Assistant przez telefon, a ten wymaga HTTPS z zaufanym certyfikatem (np. Home Assistant Cloud). Zwykłe http:// nie działa, także w domu.\n\nWristTalk jest darmowy. Jeśli Ci się przydaje, możesz go wesprzeć na [GitHub Sponsors]({sponsors})."
         }
       }
     },
@@ -30,7 +30,7 @@
           "url": "Adres dla zegarków"
         },
         "data_description": {
-          "url": "Zapisany adres: [{url}]({url})\n\nSkopiuj go do ustawień WristTalk w aplikacji Connect IQ na telefonie. Zmieniony adres musi też trafić do zegarków: wklej go tam albo sparuj zegarek ponownie.\n\nWristTalk jest darmowy. Jeśli Ci się przydaje, możesz go wesprzeć na [GitHub Sponsors](https://github.com/sponsors/grzegorz-krzyzak)."
+          "url": "Zapisany adres: [{url}]({url})\n\nSkopiuj go do ustawień WristTalk w aplikacji Connect IQ na telefonie. Zmieniony adres musi też trafić do zegarków: wklej go tam albo sparuj zegarek ponownie.\n\nWristTalk jest darmowy. Jeśli Ci się przydaje, możesz go wesprzeć na [GitHub Sponsors]({sponsors})."
         }
       }
     },

@@ -11,6 +11,10 @@ CONF_PIPELINE: Final = "pipeline"
 CONF_CODE: Final = "code"
 CONF_URL: Final = "url"
 
+# Under the address field (setup and options); Home Assistant's translations take no URLs, so it is a
+# placeholder there
+SPONSORS_URL: Final = "https://github.com/sponsors/grzegorz-krzyzak"
+
 SUBENTRY_WATCH: Final = "watch"
 
 # Subentry data of a paired watch

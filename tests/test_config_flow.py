@@ -9,7 +9,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.wristtalk.const import CONF_PIPELINE, CONF_URL, DOMAIN
+from custom_components.wristtalk.const import (
+    CONF_PIPELINE,
+    CONF_URL,
+    DOMAIN,
+    SPONSORS_URL,
+)
 
 from .conftest import EXTERNAL_URL
 
@@ -21,6 +26,8 @@ async def test_user_flow_offers_https_addresses_and_preferred_pipeline(
         DOMAIN, context={"source": SOURCE_USER}
     )
     assert result["type"] is FlowResultType.FORM
+    # The support link under the address field comes in as a placeholder (translations take no URLs)
+    assert result["description_placeholders"] == {"sponsors": SPONSORS_URL}
     schema = result["data_schema"].schema
     fields = {str(key): key for key in schema}
     assert fields[CONF_PIPELINE].default() == "p-claude"
@@ -68,7 +75,10 @@ async def test_options_change_pipeline_and_address(hass: HomeAssistant, entry) -
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.FORM
     # The address in full above the dropdown (which cuts a long one), as a link to copy it from
-    assert result["description_placeholders"] == {CONF_URL: entry.options[CONF_URL]}
+    assert result["description_placeholders"] == {
+        CONF_URL: entry.options[CONF_URL],
+        "sponsors": SPONSORS_URL,
+    }
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_PIPELINE: "p-local", CONF_URL: "http://192.0.2.10:8123"},
