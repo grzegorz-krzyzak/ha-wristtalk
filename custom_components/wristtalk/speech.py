@@ -3,7 +3,7 @@
 The TTS engine's audio goes into ffmpeg as it comes, and ffmpeg's small Ogg pages (0.2 s each) are
 kept as they come out, so the watch can start playing while the rest is still being made. ffmpeg
 is started before the reply text is known (when the agent starts): its start takes about 0.45 s on
-a Home Assistant Green, measured 2026-11-10, hidden behind the agent's thinking.
+a Home Assistant Green, hidden behind the agent's thinking.
 """
 
 from __future__ import annotations
@@ -21,13 +21,13 @@ _LOGGER = logging.getLogger(__name__)
 # Ogg/Opus granules count 48 kHz samples
 GRANULES_PER_SECOND = 48000
 # The first answer waits for this much speech (or the end): the watch starts playing with it in
-# hand and no stall followed at the phone's pace (watch test 3d, 2026-11-10); the cloud gives whole
-# sentences, so it is there 0-0.06 s after the first byte (measured 2026-11-10)
+# hand and no stall followed at the phone's pace; the cloud gives whole sentences, so it is there
+# 0-0.06 s after the first byte
 START_MARGIN_SECONDS = 3
 # One answer carries at most this much (whole pages)
 MAX_PIECE_BYTES = 64 * 1024
 # ... and once the watch plays (a later answer) at most this much: received while playing, pieces of
-# 12-26 kB crackled now and then on the fēnix 8, up to 6.5 kB never (2026-11-10/11); 8 kB is the
+# 12-26 kB crackled now and then on the fēnix 8, up to 6.5 kB never; 8 kB is the
 # watch player's buffer (about 5.5 s of speech at 10 kbit/s)
 MAX_LATER_PIECE_BYTES = 8 * 1024
 # The whole voice; past it the voice is cut (the simulator accepted 400 kB; 256 kB is about 3.5 min
@@ -41,7 +41,7 @@ SYNTHESIS_STALL_SECONDS = 10.0
 _PAGE_HEADER = 27
 _FLAG_END_OF_STREAM = 0x04
 # The TTS's extension -> ffmpeg's input format: named, ffmpeg starts encoding at once instead of
-# probing the input first (0.3 s, measured on a Mac with MP3, 2026-11-10)
+# probing the input first (0.3 s on a Mac with MP3)
 INPUT_FORMATS = {
     "mp3": "mp3",
     "wav": "wav",
@@ -109,7 +109,7 @@ class FfmpegEncoder:
             "-application",
             "voip",
             # The whole speech band (wideband, up to 8 kHz): at a low bitrate Opus narrows it by
-            # itself, which sounds "from a cardboard box" (heard at 8 kbit/s, 2026-11-05)
+            # itself, which sounds "from a cardboard box" (heard at 8 kbit/s)
             "-cutoff",
             "8000",
             # Pages of 0.2 s, each written as soon as it is full
@@ -130,28 +130,34 @@ class FfmpegEncoder:
             stderr=asyncio.subprocess.DEVNULL,
         )
 
+    def _running(
+        self,
+    ) -> tuple[asyncio.subprocess.Process, asyncio.StreamWriter, asyncio.StreamReader]:
+        """ffmpeg with its input and output; using them before a successful start is a bug."""
+        process = self._process
+        if process is None or process.stdin is None or process.stdout is None:
+            raise RuntimeError("ffmpeg is not running")
+        return process, process.stdin, process.stdout
+
     async def feed(self, data: bytes) -> None:
-        assert self._process is not None
-        assert self._process.stdin is not None
-        self._process.stdin.write(data)
-        await self._process.stdin.drain()
+        _, stdin, _ = self._running()
+        stdin.write(data)
+        await stdin.drain()
 
     async def close_input(self) -> None:
-        assert self._process is not None
-        assert self._process.stdin is not None
+        _, stdin, _ = self._running()
         with contextlib.suppress(ConnectionResetError, BrokenPipeError):
-            self._process.stdin.close()
-            await self._process.stdin.wait_closed()
+            stdin.close()
+            await stdin.wait_closed()
 
     async def output(self) -> AsyncIterator[bytes]:
-        assert self._process is not None
-        assert self._process.stdout is not None
-        while chunk := await self._process.stdout.read(OUTPUT_CHUNK):
+        _, _, stdout = self._running()
+        while chunk := await stdout.read(OUTPUT_CHUNK):
             yield chunk
 
     async def succeeded(self) -> bool:
-        assert self._process is not None
-        return await self._process.wait() == 0
+        process, _, _ = self._running()
+        return await process.wait() == 0
 
     async def stop(self) -> None:
         if self._process is None or self._process.returncode is not None:

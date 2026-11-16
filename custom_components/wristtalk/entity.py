@@ -23,6 +23,11 @@ def watch_device_info(subentry: ConfigSubentry) -> DeviceInfo:
     )
 
 
+def entity_prefix(subentry: ConfigSubentry) -> str:
+    """The unique ID prefix of a watch's entities."""
+    return f"{subentry.subentry_id}"
+
+
 class WatchEntity(Entity):
     """An entity of a paired watch."""
 

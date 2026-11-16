@@ -3,12 +3,11 @@
 The owner opens the window with "Add watch" (a subentry flow); while it is open watches may ask to
 pair, each gets its own code. The owner types the code the watch shows into the flow: only that
 watch gets a key - the others are refused. The watch collects the key on its next poll and proves
-it has it with a request signed by it (a ping); only then does the flow store the watch (0.1.7 -
-before, a watch closed meanwhile left Home Assistant showing a watch that had no key). Anyone who knows the address can
-ask to pair, so a watch the owner did not type the code of never gets a key (security review
-2026-11-07: compare-and-confirm let a stranger's request be confirmed by mistake). The watch
-collects its key on its next poll. Nothing else is stored than the key's SHA-256 hash in the
-watch's subentry.
+it has it with a request signed by it (a ping); only then does the flow store the watch, so a watch
+closed meanwhile does not show up as a watch without a key. Anyone who knows the address can ask
+to pair, so a watch the owner did not type the code of never gets a key (comparing codes and
+confirming would let a stranger's request be confirmed by mistake). Nothing else is stored than the
+key's SHA-256 hash in the watch's subentry.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 import hmac
+import re
 import secrets
 from typing import Any
 
@@ -45,6 +45,19 @@ def key_matches(key: str, stored_hash: str) -> bool:
 
 def _new_code() -> str:
     return f"{secrets.randbelow(10**CODE_DIGITS):0{CODE_DIGITS}d}"
+
+
+# Anyone can send `pair` while the window is open: what it says about the watch shows in the owner's
+# dialog (markdown) and names the device. The model: letters, digits, spaces and - _ ( ) - no dots,
+# as the frontend turns "www.example.com" into a link by itself; the app version: digits and dots
+_UNSAFE_MODEL = re.compile(r"[^\w ()-]")
+_UNSAFE_VERSION = re.compile(r"[^0-9.]")
+
+
+def _plain(value: Any, unsafe: re.Pattern[str], limit: int) -> str:
+    """A watch's model or app version as plain text, at most `limit` characters."""
+    text = unsafe.sub("", str(value or ""))
+    return " ".join(text.split())[:limit]
 
 
 class PairingError(Exception):
@@ -158,8 +171,8 @@ class PairingWindow:
             pair_id=secrets.token_urlsafe(16),
             code=code,
             unique_id=unique_id,
-            model=str(data.get("model") or "")[:64],
-            app_version=str(data.get("app") or "")[:32],
+            model=_plain(data.get("model"), _UNSAFE_MODEL, 64),
+            app_version=_plain(data.get("app"), _UNSAFE_VERSION, 32),
         )
         self._requests[request.pair_id] = request
         self._requested.set()

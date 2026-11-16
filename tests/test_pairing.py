@@ -23,7 +23,7 @@ from custom_components.wristtalk.pairing import hash_key
 
 HEADERS = {"X-WT-Protocol": "2", "X-WT-App": "0.2.9"}
 WATCH = {
-    "unique_id": "ac915d426451c88e8ea691fa412f9af9c21b4d12",
+    "unique_id": "test-watch-0000000000000000000000000000001",  # synthetic
     "model": "fēnix 8 Solar 51 mm",
     "app": "0.1.0",
 }
@@ -489,7 +489,7 @@ async def test_endpoints_without_the_integration(
 async def test_the_window_is_three_minutes(
     hass: HomeAssistant, entry, hass_client_no_auth
 ) -> None:
-    """Long enough to go to Home Assistant and type the code; no longer (0.1.6)."""
+    """Long enough to go to Home Assistant and type the code; no longer."""
     client = await hass_client_no_auth()
     opened = dt_util.utcnow()
     with patch(
@@ -507,3 +507,22 @@ async def test_the_window_is_three_minutes(
             assert (
                 await _pair(client, {**WATCH, "unique_id": str(after)})
             ).status == status
+
+
+async def test_what_a_watch_says_about_itself_is_plain_text(
+    hass: HomeAssistant, entry, hass_client_no_auth
+) -> None:
+    # the model from the unauthenticated `pair` shows in the owner's dialog (markdown) and
+    # names the device - no links or markup
+    client = await hass_client_no_auth()
+    await _start_add_watch(hass, entry)
+    body = {
+        **WATCH,
+        "model": "fēnix 8 [click](https://example.com) <b>x</b>\n# Title www.example.com",
+        "app": "1.6.0 `code` www.example.com",
+    }
+    assert (await _pair(client, body)).status == 200
+    (request,) = entry.runtime_data.pairing.requests
+    # No dots in the model: the frontend turns "www.example.com" into a link by itself
+    assert request.model == "fēnix 8 click(httpsexamplecom) bxb Title wwwexamplecom"
+    assert request.app_version == "1.6.0.."

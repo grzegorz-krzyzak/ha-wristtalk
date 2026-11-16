@@ -17,12 +17,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import WristTalkConfigEntry
 from .const import CONF_PIPELINE, SPEECH_QUALITY_BITRATES, SPEECH_QUALITY_DEFAULT
-from .entity import WatchEntity
-
-
-def entity_prefix(subentry: ConfigSubentry) -> str:
-    """The unique ID prefix of a watch's entities."""
-    return f"{subentry.subentry_id}"
+from .entity import WatchEntity, entity_prefix
 
 
 async def async_setup_entry(

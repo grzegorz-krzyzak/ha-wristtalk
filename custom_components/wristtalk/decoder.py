@@ -1,8 +1,8 @@
 """Ogg/Opus from the watch -> PCM 16 kHz, 16 bit, mono for the Assist pipeline.
 
-Home Assistant's own ffmpeg decodes it while the chunks are still arriving (measured on a Home
-Assistant Green, ffmpeg 8.1.2: PCM comes out before the input ends, cuts inside Ogg pages do not
-matter, a process starts in about 2 ms) - one process per command.
+Home Assistant's own ffmpeg decodes it while the chunks are still arriving (on a Home Assistant Green,
+ffmpeg 8.1.2: PCM comes out before the input ends, cuts inside Ogg pages do not matter, a process
+starts in about 2 ms) - one process per command.
 """
 
 from __future__ import annotations
@@ -62,14 +62,20 @@ class FfmpegDecoder:
             stderr=asyncio.subprocess.DEVNULL,
         )
 
+    def _pipes(self) -> tuple[asyncio.StreamWriter, asyncio.StreamReader]:
+        """ffmpeg's input and output; using them before a successful start is a bug."""
+        process = self._process
+        if process is None or process.stdin is None or process.stdout is None:
+            raise RuntimeError("ffmpeg is not running")
+        return process.stdin, process.stdout
+
     async def feed(self, data: bytes) -> None:
-        assert self._process is not None
-        assert self._process.stdin is not None
+        stdin, _ = self._pipes()
         if self._input_closed:
             return
-        self._process.stdin.write(data)
+        stdin.write(data)
         with contextlib.suppress(ConnectionResetError, BrokenPipeError):
-            await self._process.stdin.drain()
+            await stdin.drain()
 
     async def close_input(self) -> None:
         if self._process is None or self._process.stdin is None or self._input_closed:
@@ -80,9 +86,8 @@ class FfmpegDecoder:
             await self._process.stdin.wait_closed()
 
     async def pcm(self) -> AsyncIterator[bytes]:
-        assert self._process is not None
-        assert self._process.stdout is not None
-        while chunk := await self._process.stdout.read(PCM_CHUNK):
+        _, stdout = self._pipes()
+        while chunk := await stdout.read(PCM_CHUNK):
             yield chunk
 
     async def stop(self) -> None:

@@ -10,8 +10,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import WristTalkConfigEntry
 from .const import WATCH_NEEDS_PAIRING
-from .entity import WatchEntity
-from .select import entity_prefix
+from .entity import WatchEntity, entity_prefix
 from .watch_state import status_signal
 
 STATUS_PAIRED = "paired"

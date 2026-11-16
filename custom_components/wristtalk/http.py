@@ -11,6 +11,7 @@ from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     API_BASE,
@@ -25,6 +26,7 @@ from .const import (
     SUBENTRY_WATCH,
     WATCH_KEY_HASH,
 )
+from .entity import entity_prefix
 from .pairing import PairingError, key_matches
 from .session import MAX_CHUNK_BYTES, SessionError
 from .watch_state import async_needs_pairing
@@ -52,7 +54,7 @@ def _protocol_error(request: web.Request) -> web.Response | None:
     """HTTP 426 when the app is too old, 501 when the integration is.
 
     Two status codes, not one with two error texts: Connect IQ may hand the app no body for a
-    status other than 200 (measured in the simulator for the chunk requests, which have a binary
+    status other than 200 (seen in the simulator for the chunk requests, which have a binary
     body; a JSON request got its 401 body).
     """
     try:
@@ -69,6 +71,25 @@ def _protocol_error(request: web.Request) -> web.Response | None:
 def _entry(hass: HomeAssistant) -> ConfigEntry | None:
     entries = hass.config_entries.async_loaded_entries(DOMAIN)
     return entries[0] if entries else None
+
+
+def _no_access(hass: HomeAssistant, request: web.Request) -> web.Response:
+    """The answer when no loaded entry has the request's watch.
+
+    While the entry is not loaded (a reload after an options change or a new watch, a setup retry,
+    the integration disabled) a watch whose key is still stored gets 503 `not_ready`: it retries
+    and keeps its key - 401 makes it delete the key and pair again. 401 for a key no entry has:
+    a watch removed, or never paired.
+    """
+    key = request.headers.get(HEADER_KEY, "")
+    if key and _entry(hass) is None:
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            for subentry in entry.subentries.values():
+                if subentry.subentry_type == SUBENTRY_WATCH and key_matches(
+                    key, subentry.data.get(WATCH_KEY_HASH, "")
+                ):
+                    return _error("not_ready", HTTPStatus.SERVICE_UNAVAILABLE)
+    return _error("unauthorized", HTTPStatus.UNAUTHORIZED)
 
 
 def _data(hass: HomeAssistant) -> WristTalkData | None:
@@ -94,10 +115,26 @@ def authenticated_watch(
     return found
 
 
+async def _read_body(request: web.Request, limit: int) -> bytes | None:
+    """The whole body, or None when it is larger than `limit`.
+
+    `content.read(n)` gives only what has arrived so far: a body in two TCP segments (through a
+    proxy or the cloud) would be cut, so it is read to its end, never past the limit.
+    """
+    if request.content_length is not None and request.content_length > limit:
+        return None
+    body = bytearray()
+    while part := await request.content.read(limit + 1 - len(body)):
+        body += part
+        if len(body) > limit:
+            return None
+    return bytes(body)
+
+
 async def _pair_body(request: web.Request) -> dict[str, Any] | None:
     """The pairing request's JSON object; {} when it is not one, None when it is too large."""
-    raw = await request.content.read(MAX_PAIR_BODY_BYTES + 1)
-    if len(raw) > MAX_PAIR_BODY_BYTES:
+    raw = await _read_body(request, MAX_PAIR_BODY_BYTES)
+    if raw is None:
         return None
     try:
         body = json.loads(raw)
@@ -164,7 +201,7 @@ class PingView(HomeAssistantView):
             data = _data(hass)
             key = request.headers.get(HEADER_KEY, "")
             if data is None or not key or not data.pairing.acknowledge(key):
-                return _error("unauthorized", HTTPStatus.UNAUTHORIZED)
+                return _no_access(hass, request)
         return _reply({"ok": True})
 
 
@@ -183,7 +220,7 @@ class RepairView(HomeAssistantView):
         entry = _entry(hass)
         watch = authenticated_watch(hass, request)
         if entry is None or watch is None:
-            return _error("unauthorized", HTTPStatus.UNAUTHORIZED)
+            return _no_access(hass, request)
         async_needs_pairing(hass, entry, watch)
         return _reply({"ok": True})
 
@@ -191,10 +228,19 @@ class RepairView(HomeAssistantView):
 def _answer(
     hass: HomeAssistant, request: web.Request, response: web.Response
 ) -> web.Response:
-    """A request that waited may outlive its watch (removed meanwhile): then 401, re-pair."""
+    """A request that waited may outlive its watch (removed meanwhile): then 401, re-pair - or
+    the entry (reloaded meanwhile): then 503, retry."""
     if authenticated_watch(hass, request) is None:
-        return _error("unauthorized", HTTPStatus.UNAUTHORIZED)
+        return _no_access(hass, request)
     return response
+
+
+def _satellite_disabled(hass: HomeAssistant, watch: ConfigSubentry) -> bool:
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "assist_satellite", DOMAIN, f"{entity_prefix(watch)}-satellite"
+    )
+    entity = er.async_get(hass).async_get(entity_id) if entity_id else None
+    return entity is not None and entity.disabled
 
 
 def _watch_context(hass: HomeAssistant, request: web.Request, session_id: str):
@@ -204,7 +250,7 @@ def _watch_context(hass: HomeAssistant, request: web.Request, session_id: str):
     data = _data(hass)
     watch = authenticated_watch(hass, request)
     if data is None or watch is None:
-        return None, None, _error("unauthorized", HTTPStatus.UNAUTHORIZED)
+        return None, None, _no_access(hass, request)
     if not SESSION_ID.fullmatch(session_id):
         return None, None, _error("invalid_request", HTTPStatus.BAD_REQUEST)
     return data, watch, None
@@ -231,8 +277,15 @@ class CommandView(HomeAssistantView):
         if position < 0:
             return _error("invalid_request", HTTPStatus.BAD_REQUEST)
         if (satellite := data.satellites.get(watch.subentry_id)) is None:
-            return _error("not_ready", HTTPStatus.SERVICE_UNAVAILABLE)
-        body = await request.content.read(MAX_REQUEST_BYTES + 1)
+            # The watch's satellite is not running: disabled by the owner, or still starting
+            code = "watch_disabled" if _satellite_disabled(hass, watch) else "not_ready"
+            return _error(code, HTTPStatus.SERVICE_UNAVAILABLE)
+        if (body := await _read_body(request, MAX_REQUEST_BYTES)) is None:
+            return _answer(
+                hass,
+                request,
+                _error("chunk_too_large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE),
+            )
         try:
             session = await data.sessions.get_or_start(
                 watch.subentry_id,

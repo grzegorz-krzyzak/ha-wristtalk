@@ -6,9 +6,15 @@ Voice assistant for Home Assistant on a Garmin watch: open the WristTalk app, sa
 and the reply, hear the reply from the watch speaker. This integration is the Home Assistant side:
 it pairs the watches and runs their voice through an Assist pipeline you choose.
 
-**Status: 0.5.0, tested in the Connect IQ simulator and on a fēnix 8 Solar 51 mm against a real Home Assistant.**
-The watch app: [garmin-wristtalk](https://github.com/grzegorz-krzyzak/garmin-wristtalk) - not in
-the Connect IQ store yet.
+**Status: tested in the Connect IQ simulator and on a fēnix 8 Solar 51 mm against a real Home Assistant.**
+The version and what changed: [releases](https://github.com/grzegorz-krzyzak/ha-wristtalk/releases).
+The watch app: [WristTalk in the Connect IQ store](https://apps.garmin.com/apps/515ad521-de52-4de0-b7f5-00ec036d4914), source in
+[garmin-wristtalk](https://github.com/grzegorz-krzyzak/garmin-wristtalk).
+
+**The watch app and the integration speak a numbered protocol.** The middle number of the version
+is that protocol (the integration 1.6.x and the watch app 1.6.x speak protocol 6). A
+newer integration still serves older watch apps (protocol 2 and up); a watch app newer than the
+integration says "Update the integration in Home Assistant" - update the integration first.
 
 **A personal, non-commercial hobby project by a private individual.** Not affiliated with or endorsed by
 the Open Home Foundation, Home Assistant or Garmin.
@@ -22,7 +28,11 @@ the Open Home Foundation, Home Assistant or Garmin.
 
 ## Installation
 
-With [HACS](https://hacs.xyz): HACS -> the three dots -> **Custom repositories**, add
+Home Assistant 2026.11 or newer (HACS is built in as the **Marketplace**): Settings -> Marketplace ->
+**Add from link**, enter `https://github.com/grzegorz-krzyzak/ha-wristtalk`, install WristTalk and restart
+Home Assistant.
+
+Home Assistant 2026.10 with [HACS](https://hacs.xyz): HACS -> the three dots -> **Custom repositories**, add
 `https://github.com/grzegorz-krzyzak/ha-wristtalk` as an **Integration**, then install WristTalk and
 restart Home Assistant.
 
@@ -44,6 +54,19 @@ command has already started.
 **The watch can do everything you exposed to Assist** - also over the internet, through your phone.
 Turn on the watch's passcode (the watch's settings, System, Passcode) so a lost watch is not an open
 door, and delete a lost watch in Home Assistant.
+
+## Removal
+
+Settings -> Devices & services -> WristTalk -> the three dots -> **Delete**. The keys of all watches
+are revoked at once, their devices and entities go, and so does the system user **WristTalk** the
+integration creates: the watches' commands run as that user, so the logbook shows where a command
+came from. Then remove the
+integration's files (the Marketplace, HACS, or `config/custom_components/wristtalk` by hand) and
+restart Home Assistant. The watch app on the watch only says it needs pairing.
+
+The integration fires the event `wristtalk_command_run` when a watch's command starts a pipeline
+run (the command's session, the watch's satellite entity and the run's start) - nothing is stored
+for it.
 
 ## Replies on the watch
 
@@ -75,6 +98,10 @@ uv pip install -p .venv/bin/python ruff  # lint and format, checked in CI as wel
 Assist's audio libraries (`pymicro-vad`, `pyspeex-noise`) have no wheels for Python 3.14 on macOS;
 the tests stand in for them when they are missing. GitHub Actions runs the tests on Linux with the
 real ones (`.github/workflows/tests.yml`).
+
+## Support
+
+WristTalk is free. If it is useful to you, you can support it on [GitHub Sponsors](https://github.com/sponsors/grzegorz-krzyzak).
 
 ## Licence
 

@@ -383,7 +383,7 @@ async def test_the_watch_asks_while_pair_again_is_open(
     hass: HomeAssistant, entry, hass_client_no_auth
 ) -> None:
     """The ⚙ "Pair again" opened first, then the watch's own "Pair again" arrives: the open flow
-    must go on (a reload used to end it - "Unknown error" on typing the code, 2026-11-08)."""
+    must go on (a reload would end it - "Unknown error" on typing the code)."""
     old = await watch_fixture(hass, entry, hass_client_no_auth)
     (subentry_id,) = entry.subentries
     client = old["client"]

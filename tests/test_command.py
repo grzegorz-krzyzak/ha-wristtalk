@@ -27,6 +27,7 @@ from pytest_homeassistant_custom_component.common import async_capture_events
 from custom_components.wristtalk import CONF_USER_ID
 from custom_components.wristtalk.const import CONF_PIPELINE, DOMAIN
 from custom_components.wristtalk.decoder import FfmpegDecoder
+from custom_components.wristtalk.session import MAX_CHUNK_BYTES
 from custom_components.wristtalk.speech import FfmpegEncoder, SpeechStream
 
 from .test_pairing import (
@@ -443,8 +444,8 @@ async def test_nothing_heard(hass: HomeAssistant, watch, pipeline) -> None:
 async def test_stt_failure_ends_the_command_with_one_run(
     hass: HomeAssistant, watch, pipeline
 ) -> None:
-    """No STT retry (removed 2026-11-07: it got the same recording and rescued none of 20
-    commands): one pipeline run, the watch hears "nothing" at once."""
+    """No STT retry (it got the same recording and rescued none of 20 commands): one pipeline
+    run, the watch hears "nothing" at once."""
     pipeline.errors = ["stt-stream-failed"]
     status, body = await _chunk(watch, "a1", 0, b"abc" + END)
     assert (status, body["state"]) == (200, "nothing")
@@ -1132,7 +1133,7 @@ async def test_two_first_chunks_at_once_wait_for_the_decoder(
     hass: HomeAssistant, watch, pipeline
 ) -> None:
     """The watch can send its first two chunks at once: the second must wait until the command's
-    decoder has started, not fail with 500 (seen twice in 50 commands, 2026-11-06/07)."""
+    decoder has started, not fail with 500."""
     release = asyncio.Event()
     with patch(
         "custom_components.wristtalk.create_decoder",
@@ -1473,3 +1474,144 @@ async def test_synthesis_giving_nothing_is_given_up(
         assert await _piece(watch, "a1", 0) == (200, HEADER_PAGES + three)
         await asyncio.sleep(0.1)
         assert (await _piece(watch, "a1", len(HEADER_PAGES + three)))[0] == 410
+
+
+class _SlowStopDecoder(PassthroughDecoder):
+    """A decoder whose stop takes a moment, as stopping ffmpeg does."""
+
+    async def stop(self) -> None:
+        await asyncio.sleep(0.05)
+        await super().stop()
+
+
+async def test_two_first_chunks_of_a_new_command_start_it_once(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    # the watch sends two chunks at a time; with the previous command still the current
+    # one, both first chunks of the new command closed it and each started its own run
+    with patch(
+        "custom_components.wristtalk.create_decoder", lambda hass: _SlowStopDecoder()
+    ):
+        await _chunk(watch, "a1", 0, END)
+        await hass.async_block_till_done()
+        runs_before = len(pipeline.runs)
+        first = asyncio.ensure_future(_chunk(watch, "a2", 0, b"abc"))
+        await asyncio.sleep(0.01)
+        second = asyncio.ensure_future(_chunk(watch, "a2", 3, b"def" + END))
+        statuses = [(await first)[0], (await second)[0]]
+        await hass.async_block_till_done()
+    assert statuses == [200, 200]
+    assert [run["audio"] for run in pipeline.runs[runs_before:]] == [b"abcdef" + END]
+
+
+async def test_a_chunk_arriving_in_pieces_is_read_whole(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    # content.read(n) gave only what had arrived - a chunk in two TCP segments was cut
+    async def body():
+        yield b"abc"
+        await asyncio.sleep(0.05)
+        yield b"def"
+
+    response = await watch["client"].post(
+        "/api/wristtalk/v1/command/b1/0", data=body(), headers=watch["headers"]
+    )
+    assert response.status == 200
+    status, _ = await _chunk(watch, "b1", 6, END)
+    assert status == 200
+    await hass.async_block_till_done()
+    assert [run["audio"] for run in pipeline.runs] == [b"abcdef" + END]
+
+
+async def test_a_chunk_over_the_limit_in_pieces_is_refused(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    async def body():
+        yield b"a" * MAX_CHUNK_BYTES
+        await asyncio.sleep(0.01)
+        yield b"a"
+
+    response = await watch["client"].post(
+        "/api/wristtalk/v1/command/b2/0", data=body(), headers=watch["headers"]
+    )
+    assert (response.status, (await response.json())["error"]) == (
+        413,
+        "chunk_too_large",
+    )
+
+
+async def test_requests_during_a_reload_keep_the_key(
+    hass: HomeAssistant, watch, pipeline, entry
+) -> None:
+    # while the entry reloads no key can be checked - 401 made the watch delete its key
+    hold = asyncio.Event()
+    unload = hass.config_entries.async_unload_platforms
+
+    async def slow_unload(config_entry, platforms):
+        await hold.wait()
+        return await unload(config_entry, platforms)
+
+    with patch.object(
+        hass.config_entries, "async_unload_platforms", side_effect=slow_unload
+    ):
+        reload = hass.async_create_task(
+            hass.config_entries.async_reload(entry.entry_id)
+        )
+        await asyncio.sleep(0.01)
+        status, body = await _chunk(watch, "c1", 0, b"abc")
+        ping = await watch["client"].post(
+            "/api/wristtalk/v1/ping", headers=watch["headers"]
+        )
+        hold.set()
+        await reload
+    assert (status, body["error"]) == (503, "not_ready")
+    assert ping.status == 503
+    # Loaded again: the same key works, a wrong one is still refused
+    assert (
+        await watch["client"].post("/api/wristtalk/v1/ping", headers=watch["headers"])
+    ).status == 200
+    assert (
+        await watch["client"].post("/api/wristtalk/v1/ping", headers=HEADERS)
+    ).status == 401
+
+
+async def test_a_disabled_watch_gets_a_defined_error(
+    hass: HomeAssistant, watch, pipeline, entry, caplog: pytest.LogCaptureFixture
+) -> None:
+    # a disabled satellite stayed registered without `hass` - a traceback on every command
+    registry = er.async_get(hass)
+    (satellite,) = [
+        e
+        for e in er.async_entries_for_config_entry(registry, entry.entry_id)
+        if e.domain == "assist_satellite"
+    ]
+    registry.async_update_entity(
+        satellite.entity_id, disabled_by=er.RegistryEntryDisabler.USER
+    )
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    status, body = await _chunk(watch, "e1", 0, b"abc" + END)
+    assert (status, body["error"]) == (503, "watch_disabled")
+    assert pipeline.runs == []
+    assert "Traceback" not in caplog.text
+
+
+class _BrokenDecoder(PassthroughDecoder):
+    async def start(self) -> None:
+        raise FileNotFoundError("ffmpeg")
+
+
+async def test_ffmpeg_not_starting_leaves_no_session(
+    hass: HomeAssistant, watch, pipeline
+) -> None:
+    # the failure escaped as a bare 500 and the broken session took the next chunks
+    with patch(
+        "custom_components.wristtalk.create_decoder", lambda hass: _BrokenDecoder()
+    ):
+        first = await _chunk(watch, "d1", 0, b"abc")
+        second = await _chunk(watch, "d1", 3, b"def")
+    assert (first[0], first[1]["error"]) == (503, "decoder_failed")
+    assert (second[0], second[1]["error"]) == (503, "decoder_failed")
+    # ffmpeg back: the next command works
+    status, body = await _chunk(watch, "d2", 0, END)
+    assert (status, body["state"]) == (200, "heard")

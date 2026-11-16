@@ -1,4 +1,4 @@
-"""Until 1.0 the middle number of the version is the protocol number."""
+"""The middle number of the version is the protocol number - permanently, on both sides."""
 
 import json
 from pathlib import Path
@@ -10,9 +10,8 @@ MANIFEST = (
 )
 
 
-def test_until_1_0_the_middle_number_is_the_protocol() -> None:
-    major, minor, _ = (
+def test_the_middle_number_is_the_protocol() -> None:
+    _, minor, _ = (
         int(part) for part in json.loads(MANIFEST.read_text())["version"].split(".")
     )
-    if major == 0:
-        assert minor == PROTOCOL
+    assert minor == PROTOCOL

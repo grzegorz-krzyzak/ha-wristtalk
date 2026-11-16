@@ -30,10 +30,10 @@ _LOGGER = logging.getLogger(__name__)
 
 MAX_CHUNK_BYTES = 16 * 1024
 # The whole recording of a command, with the chunks still waiting for a missing one: 20 s of the
-# watch's microphone is about 68 kB (3.4 kB/s, measured), so this only stops a broken or hostile
+# watch's microphone is about 68 kB (3.4 kB/s), so this only stops a broken or hostile
 # client from filling the memory within the command's 20 s
 MAX_RECORDING_BYTES = 256 * 1024
-# Chunks waiting for a missing one: the watch sends two at a time (security review 2026-11-07)
+# Chunks waiting for a missing one: the watch sends two at a time
 MAX_PENDING_CHUNKS = 6
 MAX_COMMAND_SECONDS = 20.0
 COMMANDS_PER_MINUTE = 30
@@ -41,7 +41,7 @@ COMMANDS_PER_MINUTE = 30
 # phone a chunk can take 3.5 s) must not end the current command and start the old one again
 ENDED_REMEMBERED = 8
 # A request held longer than about 5 s does not come back through the phone (held 10, 15 or 25 s
-# it failed after about 30 s, measured on a fēnix 8 through an iPhone, 2026-11-04): every wait
+# it failed after about 30 s on a fēnix 8 through an iPhone): every wait
 # answers within 4 s, and the watch asks again
 HEARD_WAIT_SECONDS = 4.0
 # The pipeline's VAD sees a chunk a moment after it is written: a short grace lets the very chunk
@@ -52,8 +52,7 @@ STT_FAILED_ERROR = "stt-stream-failed"
 NOTHING_ERRORS = ("stt-no-text-recognized",)
 # STT failing is "nothing heard" twice in a row on a watch - a short noise before speech ends the
 # command in the VAD; from the third time an error the watch tells by its status. Not retried: a
-# retry gets the same recording and the VAD the same short sound - it rescued none of 20 commands
-# (measured 2026-11-04/07).
+# retry gets the same recording and the VAD the same short sound - it rescued none of 20 commands.
 # 424 "failed dependency": no proxy on the way (Home Assistant Cloud) sends it.
 STT_FAILURES_FOR_ERROR = 3
 STT_FAILED = "stt_failed"
@@ -154,8 +153,7 @@ class CommandSession:
         if len(data) > MAX_CHUNK_BYTES:
             raise SessionError("chunk_too_large", 413)
         # Two chunks travel at once: a later one can arrive first and start the command, and the
-        # first one then finds ffmpeg still starting (twice in 50 commands an AssertionError and
-        # 500, 2026-11-06/07)
+        # first one then finds ffmpeg still starting
         await self._started.wait()
         if final:
             self._final_end = max(self._final_end or 0, offset + len(data))
@@ -406,6 +404,9 @@ class SessionManager:
         self._starts: dict[str, deque[float]] = {}
         self._stt_failures: dict[str, int] = {}
         self._ended: dict[str, deque[str]] = {}
+        # One start at a time per watch: the watch sends two chunks at once, and two first chunks
+        # of a new command would otherwise both close the previous session and each start its own
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def get(self, watch_id: str, session_id: str) -> CommandSession:
         session = self._sessions.get(watch_id)
@@ -414,6 +415,22 @@ class SessionManager:
         return session
 
     async def get_or_start(
+        self,
+        watch_id: str,
+        session_id: str,
+        satellite: WristTalkSatellite,
+        *,
+        text_only: bool,
+    ) -> CommandSession:
+        current = self._sessions.get(watch_id)
+        if current is not None and current.session_id == session_id:
+            return current
+        async with self._locks.setdefault(watch_id, asyncio.Lock()):
+            return await self._get_or_start(
+                watch_id, session_id, satellite, text_only=text_only
+            )
+
+    async def _get_or_start(
         self,
         watch_id: str,
         session_id: str,
@@ -446,16 +463,23 @@ class SessionManager:
             session_id=session_id,
             decoder=self._decoder_factory(self._hass),
             text_only=text_only,
-            on_closed=lambda s: (
-                self._sessions.pop(watch_id, None)
-                if self._sessions.get(watch_id) is s
-                else None
-            ),
+            on_closed=lambda closed: self._forget(watch_id, closed),
             on_stt=lambda failed: self._count_stt(watch_id, failed),
         )
         self._sessions[watch_id] = session
-        await session.start()
+        try:
+            await session.start()
+        except Exception as err:
+            # ffmpeg missing or not starting: no half-started session stays to take the next chunks
+            self._forget(watch_id, session)
+            _LOGGER.warning("WristTalk could not start ffmpeg for a command: %s", err)
+            raise SessionError("decoder_failed", 503) from err
         return session
+
+    def _forget(self, watch_id: str, session: CommandSession) -> None:
+        """Drops a closed (or never started) session, unless a newer one has replaced it."""
+        if self._sessions.get(watch_id) is session:
+            del self._sessions[watch_id]
 
     def _count_stt(self, watch_id: str, failed: bool) -> int:
         """STT failures in a row on this watch; a recognised command resets the count."""

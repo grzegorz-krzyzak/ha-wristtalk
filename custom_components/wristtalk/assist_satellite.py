@@ -32,8 +32,7 @@ from .const import (
     SPEECH_QUALITY_BITRATES,
     SPEECH_QUALITY_DEFAULT,
 )
-from .entity import WatchEntity
-from .select import entity_prefix
+from .entity import WatchEntity, entity_prefix
 from .speech import SpeechStream, create_encoder
 
 if TYPE_CHECKING:
@@ -47,9 +46,10 @@ async def async_setup_entry(
 ) -> None:
     # Every subentry is a watch (the only subentry type)
     for subentry in entry.subentries.values():
-        satellite = WristTalkSatellite(entry, subentry)
-        entry.runtime_data.satellites[subentry.subentry_id] = satellite
-        async_add_entities([satellite], config_subentry_id=subentry.subentry_id)
+        async_add_entities(
+            [WristTalkSatellite(entry, subentry)],
+            config_subentry_id=subentry.subentry_id,
+        )
 
 
 class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
@@ -63,6 +63,18 @@ class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
         self._entry = entry
         self._attr_unique_id = f"{entity_prefix(subentry)}-satellite"
         self._session: CommandSession | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        # Only a satellite Home Assistant runs takes commands: a disabled one is never added and
+        # has no `hass` - registered here, not at setup
+        self._entry.runtime_data.satellites[self.subentry.subentry_id] = self
+
+    async def async_will_remove_from_hass(self) -> None:
+        satellites = self._entry.runtime_data.satellites
+        if satellites.get(self.subentry.subentry_id) is self:
+            del satellites[self.subentry.subentry_id]
+        await super().async_will_remove_from_hass()
 
     def _select_entity_id(self, key: str) -> str | None:
         return er.async_get(self.hass).async_get_entity_id(
@@ -128,7 +140,7 @@ class WristTalkSatellite(WatchEntity, AssistSatelliteEntity):
 
         No format is asked of the TTS: Home Assistant then gives MP3 - the Home Assistant Cloud
         engine's own format, so nothing converts it before ffmpeg (asking for Opus cost a second
-        lossy pass and about 0.25 s, measured 2026-11-10). ffmpeg makes the watch's Ogg/Opus at the
+        lossy pass and about 0.25 s). ffmpeg makes the watch's Ogg/Opus at the
         watch's "Reply voice quality" - Home Assistant's own bitrate option is for MP3 only.
         """
         pipeline = async_get_pipeline(self.hass, self._resolve_pipeline())

@@ -280,8 +280,8 @@ class PairingSteps:
             return self.async_show_progress(  # type: ignore[attr-defined]
                 step_id="key",
                 progress_action="wait_key",
-                # As the other waiting steps: never without placeholders (an "Unknown error" in the
-                # browser right after a code was typed, 2026-11-08 - the one step that had none)
+                # As the other waiting steps: never without placeholders (without them the browser
+                # showed "Unknown error" right after a code was typed)
                 description_placeholders={"watch": name or "-"},
                 progress_task=self._key_task,
             )

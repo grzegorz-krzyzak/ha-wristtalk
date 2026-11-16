@@ -98,7 +98,7 @@ def _shape(entry: WristTalkConfigEntry) -> tuple:
 async def _async_reload(hass: HomeAssistant, entry: WristTalkConfigEntry) -> None:
     """A watch added or removed, or the options changed. Not a watch's new key or status: a reload
     would end the pairing flows open at that moment (the watch's "Pair again" arriving while
-    "Pair again" was open in Home Assistant - 2026-11-08), and those changes need none - the key
+    "Pair again" is open in Home Assistant), and those changes need none - the key
     is read at each request, the status sensor follows a signal."""
     if _shape(entry) == entry.runtime_data.shape:
         return

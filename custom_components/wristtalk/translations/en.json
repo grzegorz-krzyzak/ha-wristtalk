@@ -10,7 +10,7 @@
         },
         "data_description": {
           "pipeline": "The Assist pipeline a new watch uses; each watch can pick its own in its device card.",
-          "url": "The watch reaches Home Assistant through the phone, which needs HTTPS with a trusted certificate (e.g. Home Assistant Cloud). Plain http:// does not work, also at home."
+          "url": "The watch reaches Home Assistant through the phone, which needs HTTPS with a trusted certificate (e.g. Home Assistant Cloud). Plain http:// does not work, also at home.\n\nWristTalk is free. If it is useful to you, you can support it on [GitHub Sponsors](https://github.com/sponsors/grzegorz-krzyzak)."
         }
       }
     },
@@ -30,7 +30,7 @@
           "url": "Address for the watches"
         },
         "data_description": {
-          "url": "Saved address: [{url}]({url})\n\nCopy it into the WristTalk settings in the Connect IQ app on your phone. A changed address must reach the watches too: paste it there, or pair the watch again."
+          "url": "Saved address: [{url}]({url})\n\nCopy it into the WristTalk settings in the Connect IQ app on your phone. A changed address must reach the watches too: paste it there, or pair the watch again.\n\nWristTalk is free. If it is useful to you, you can support it on [GitHub Sponsors](https://github.com/sponsors/grzegorz-krzyzak)."
         }
       }
     },
