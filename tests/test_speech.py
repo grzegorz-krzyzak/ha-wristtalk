@@ -129,6 +129,38 @@ async def test_a_page_larger_than_a_piece_is_sent_whole(hass: HomeAssistant) -> 
         assert await speech.piece(0, _soon()) == big
 
 
+async def test_the_first_piece_is_at_most_8_s_of_speech(hass: HomeAssistant) -> None:
+    """A long reply: the first answer stops at 8 s of speech, the rest comes after it."""
+    speech, encoder = await _stream(hass)
+    pages = [ogg_page(n * SECOND) for n in range(1, 21)]
+    await encoder.out.put(
+        HEADER_PAGES + b"".join(pages[:-1]) + ogg_page(20 * SECOND, eos=True)
+    )
+    await encoder.out.put(None)
+    first = await speech.piece(0, _soon())
+    assert first == HEADER_PAGES + b"".join(pages[:8])
+    rest = await speech.piece(len(first), _soon())
+    assert rest.startswith(pages[8])
+
+
+async def test_the_first_piece_while_the_voice_is_made(hass: HomeAssistant) -> None:
+    """Not ended yet, 12 s made: the first answer still gives 8 s."""
+    speech, encoder = await _stream(hass)
+    pages = [ogg_page(n * SECOND) for n in range(1, 13)]
+    await encoder.out.put(HEADER_PAGES + b"".join(pages))
+    assert await speech.piece(0, _soon()) == HEADER_PAGES + b"".join(pages[:8])
+    await speech.close()
+
+
+async def test_a_reply_of_8_s_comes_whole_in_one_answer(hass: HomeAssistant) -> None:
+    speech, encoder = await _stream(hass)
+    voice = HEADER_PAGES + b"".join(ogg_page(n * SECOND) for n in range(1, 8))
+    voice += ogg_page(8 * SECOND, eos=True)
+    await encoder.out.put(voice)
+    await encoder.out.put(None)
+    assert await speech.piece(0, _soon()) == voice
+
+
 async def test_an_offset_past_the_end(hass: HomeAssistant) -> None:
     speech, encoder = await _stream(hass)
     await encoder.out.put(HEADER_PAGES + ogg_page(SECOND, eos=True))

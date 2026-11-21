@@ -1240,7 +1240,8 @@ async def test_later_pieces_are_at_most_8_kb(
 
 async def test_one_piece_is_at_most_64_kb(hass: HomeAssistant, watch, pipeline) -> None:
     queue = await _heard_with_voice_queue(watch, pipeline)
-    pages = b"".join(ogg_page(n * SECOND, b"\x00" * 5000) for n in range(1, 21))
+    # 5 s of speech in 100 kB: under the first answer's 8 s, so the bytes cap it
+    pages = b"".join(ogg_page(n * SECOND // 4, b"\x00" * 5000) for n in range(1, 21))
     await queue.put(HEADER_PAGES + pages)
     status, piece = await _piece(watch, "a1", 0)
     assert status == 200

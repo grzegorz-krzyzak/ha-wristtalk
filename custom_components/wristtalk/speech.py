@@ -26,6 +26,10 @@ GRANULES_PER_SECOND = 48000
 START_MARGIN_SECONDS = 3
 # One answer carries at most this much (whole pages)
 MAX_PIECE_BYTES = 64 * 1024
+# ... and the first answer at most this much speech: everything made so far (up to 64 kB) takes several
+# seconds through the phone (about 13 kB/s) and nears the watch's limit for the first byte; up to 8 s a
+# reply still comes whole in one request, a longer one starts with about 16 kB at 16 kbit/s
+MAX_FIRST_PIECE_SECONDS = 8
 # ... and once the watch plays (a later answer) at most this much: received while playing, pieces of
 # 12-26 kB crackled now and then on the fēnix 8, up to 6.5 kB never; 8 kB is the
 # watch player's buffer (about 5.5 s of speech at 10 kbit/s)
@@ -314,6 +318,15 @@ class SpeechStream:
         """The end of the last whole page within one answer from `offset`."""
         limit = offset + (MAX_PIECE_BYTES if offset == 0 else MAX_LATER_PIECE_BYTES)
         index = bisect_right(self._page_ends, limit) - 1
+        if offset == 0:
+            # Pages up to MAX_FIRST_PIECE_SECONDS of speech (a page's granule = the speech up to its end)
+            index = min(
+                index,
+                bisect_right(
+                    self._page_granules, MAX_FIRST_PIECE_SECONDS * GRANULES_PER_SECOND
+                )
+                - 1,
+            )
         end = self._page_ends[index] if index >= 0 else 0
         if end <= offset:
             # A page larger than an answer (not from ffmpeg's 0.2 s pages): sent whole
@@ -324,8 +337,9 @@ class SpeechStream:
         """The bytes from `offset`, waiting until `deadline` (loop time) for enough of them.
 
         From the start, the answer waits for START_MARGIN_SECONDS of speech or the end - the watch's
-        start margin in one request, and a short reply whole in one request. Later answers give
-        whatever new pages there are, as soon as there are any.
+        start margin in one request, and a short reply whole in one request - and gives at most
+        MAX_FIRST_PIECE_SECONDS of speech. Later answers give whatever new pages there are, as soon
+        as there are any.
         """
         loop = asyncio.get_running_loop()
         while True:
