@@ -99,9 +99,11 @@ Assist's audio libraries (`pymicro-vad`, `pyspeex-noise`) have no wheels for Pyt
 the tests stand in for them when they are missing. GitHub Actions runs the tests on Linux with the
 real ones (`.github/workflows/tests.yml`).
 
-## Support
+## Contact & support
 
-WristTalk is free. If it is useful to you, you can support it on [GitHub Sponsors](https://github.com/sponsors/grzegorz-krzyzak).
+- **Something not working?** [Report it here](https://github.com/grzegorz-krzyzak/ha-wristtalk/issues) - one place for the integration and the watch app. Do not paste your house address.
+- **No GitHub account, a question or an idea?** Write to [wristtalk.app@gmail.com](mailto:wristtalk.app@gmail.com).
+- **WristTalk is free.** If it is useful to you, you can support it on [GitHub Sponsors](https://github.com/sponsors/grzegorz-krzyzak).
 
 ## Licence
 
