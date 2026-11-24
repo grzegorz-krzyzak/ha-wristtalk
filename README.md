@@ -12,7 +12,7 @@ The watch app: [WristTalk in the Connect IQ store](https://apps.garmin.com/apps/
 [garmin-wristtalk](https://github.com/grzegorz-krzyzak/garmin-wristtalk).
 
 **The watch app and the integration speak a numbered protocol.** The middle number of the version
-is that protocol (the integration 1.6.x and the watch app 1.6.x speak protocol 6). A
+is that protocol (the integration 1.7.x and the watch app 1.7.x speak protocol 7). A
 newer integration still serves older watch apps (protocol 2 and up); a watch app newer than the
 integration says "Update the integration in Home Assistant" - update the integration first.
 

@@ -33,8 +33,9 @@ ISSUE_NEEDS_PAIRING: Final = "needs_pairing"
 # again"; an app on protocol 2 does not send it and keeps working. 4: `final` sent at once, the
 # input closed only with the whole recording. 5: the chunk answer "recognizing". 6: `GET
 # audio/<session>/<offset>` - the voice in pieces while it is being made; apps on 2-5 get it whole
-# as before. Protocol 1 is not taken: an app that old hears "update the app" instead of working worse
-PROTOCOL: Final = 6
+# as before. 7: `POST cancel/<session>` - BACK stops a command before the agent, with a confirmation;
+# older apps do not send it (an abandoned command is still cancelled after the cap). Protocol 1 is not taken: an app that old hears "update the app" instead of working worse
+PROTOCOL: Final = 7
 # From this protocol on the watch knows the chunk answer "recognizing" (the command has ended)
 RECOGNIZING_PROTOCOL: Final = 5
 MIN_PROTOCOL: Final = 2

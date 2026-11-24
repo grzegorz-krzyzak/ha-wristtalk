@@ -36,6 +36,15 @@ MAX_RECORDING_BYTES = 256 * 1024
 # Chunks waiting for a missing one: the watch sends two at a time
 MAX_PENDING_CHUNKS = 6
 MAX_COMMAND_SECONDS = 20.0
+# After the cap a session without "final" waits this long for it (layer 2): the watch ends listening at
+# its own 20 s with "final" - only a working watch sends it - so none by then means the watch is gone (BACK
+# without a connection, the menu, the background, an exit, a crash) and the command is cancelled, never
+# run. Measured: "final" came 1.7-2.7 s before the cap (the watch counts from the start of listening, the
+# integration from the first chunk); 2 s more for a path slower than measured
+FINAL_WAIT_SECONDS = 2.0
+# What a cancel found (protocol 7): stopped before the agent, or the agent has the command
+CANCELLED = "cancelled"
+TOO_LATE = "too_late"
 COMMANDS_PER_MINUTE = 30
 # The last commands of a watch that have ended: a chunk of one of them arriving late (through the
 # phone a chunk can take 3.5 s) must not end the current command and start the old one again
@@ -82,6 +91,10 @@ class CommandSession:
     on_stt: Callable[[bool], int] | None = None
     started: float = field(default_factory=time.monotonic)
     heard: str | None = None
+    reached_agent: bool = False  # the agent started: what it does may happen
+    gone_at: float | None = (
+        None  # layer 2 cancelled it: no "final" after the cap (monotonic)
+    )
     speech: bool = False  # the pipeline's VAD heard speech start (the watch's "nothing said" timer)
     nothing: bool = False
     reply: str | None = None
@@ -109,18 +122,56 @@ class CommandSession:
     _started: asyncio.Event = field(default_factory=asyncio.Event)
     _tasks: list[asyncio.Task[Any]] = field(default_factory=list)
     _cap_handle: asyncio.TimerHandle | None = None
+    _final_wait: asyncio.TimerHandle | None = None
 
     async def start(self) -> None:
         try:
             await self.decoder.start()
             self._spawn(self._read_pcm())
             self._spawn(self._run(self._live_stream()))
-            # End of command without silence (radio, wind): close the input after the cap
+            # End of command without silence (radio, wind): the watch's "final" closes it
             self._cap_handle = self.hass.loop.call_later(
-                MAX_COMMAND_SECONDS, lambda: self._spawn(self.close_input())
+                MAX_COMMAND_SECONDS, self._on_cap
             )
         finally:
             self._started.set()
+
+    @property
+    def outcome(self) -> str:
+        """How a cancel ends for it: the state after the fact - the agent had the text or not."""
+        return TOO_LATE if self.heard or self.reached_agent else CANCELLED
+
+    def _past_return(self) -> bool:
+        """Speech-to-text has ended (the agent has it or nothing was heard): not cut any more."""
+        return self._heard_event.is_set() or self.reached_agent or self.finished
+
+    def _on_cap(self) -> None:
+        if self._final_end is not None or self._past_return():
+            # "final" is in (a missing chunk on its way), or the command is past speech-to-text
+            self._spawn(self.close_input())
+            return
+        self._final_wait = self.hass.loop.call_later(
+            FINAL_WAIT_SECONDS, self._on_final_wait
+        )
+
+    def _on_final_wait(self) -> None:
+        if self._final_end is not None or self._past_return():
+            if not self._input_closed:
+                self._spawn(self.close_input())
+            return
+        # No "final": the watch is gone - what it left never runs. Not one of the session's own
+        # tasks: closing waits for those
+        self.gone_at = time.monotonic()
+        self.hass.async_create_background_task(
+            self.close(), f"wristtalk {self.session_id} gone"
+        )
+
+    async def cancel(self) -> str:
+        """The watch's cancel (BACK): stops the command unless the agent has it."""
+        if self.heard or self.reached_agent:
+            return TOO_LATE
+        await self.close()
+        return self.outcome
 
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = self.hass.async_create_background_task(
@@ -245,6 +296,7 @@ class CommandSession:
             self._heard_event.set()
             self._ended_event.set()
         elif event.type is PipelineEventType.INTENT_START:
+            self.reached_agent = True
             if not self.text_only and self._prepare_task is None:
                 # ffmpeg starts while the agent thinks: its start (about 0.45 s on a Home Assistant
                 # Green) is not added to the voice's wait
@@ -378,11 +430,15 @@ class CommandSession:
             self._fail("closed")
         if self._cap_handle is not None:
             self._cap_handle.cancel()
-        await self.close_input()
-        await self.decoder.stop()
+        if self._final_wait is not None:
+            self._final_wait.cancel()
+        # The pipeline first: closing the input ends the audio the way a recording ends, and
+        # speech-to-text would hand what came to the agent - a cancelled or abandoned command would run
         for task in self._tasks:
             if not task.done():
                 task.cancel()
+        await self.close_input()
+        await self.decoder.stop()
         # Wait for the pipeline to unwind: what it still reports goes to the satellite's current
         # session, and the next command must not get it
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -404,6 +460,8 @@ class SessionManager:
         self._starts: dict[str, deque[float]] = {}
         self._stt_failures: dict[str, int] = {}
         self._ended: dict[str, deque[str]] = {}
+        # How each remembered ended session ended, for a repeated cancel and a late "final"
+        self._outcomes: dict[str, dict[str, tuple[str, float | None, str]]] = {}
         # One start at a time per watch: the watch sends two chunks at once, and two first chunks
         # of a new command would otherwise both close the previous session and each start its own
         self._locks: dict[str, asyncio.Lock] = {}
@@ -421,14 +479,34 @@ class SessionManager:
         satellite: WristTalkSatellite,
         *,
         text_only: bool,
+        final: bool = False,
     ) -> CommandSession:
         current = self._sessions.get(watch_id)
         if current is not None and current.session_id == session_id:
             return current
         async with self._locks.setdefault(watch_id, asyncio.Lock()):
             return await self._get_or_start(
-                watch_id, session_id, satellite, text_only=text_only
+                watch_id, session_id, satellite, text_only=text_only, final=final
             )
+
+    async def cancel(self, watch_id: str, session_id: str) -> tuple[str, str]:
+        """The watch's cancel: `cancelled` once nothing of the command can run, else `too_late` - with
+        the text the agent has (the watch shows the command with its reply).
+
+        Under the watch's lock, as a start: a first chunk and the cancel never both win. An unknown
+        session (cancel before its first chunk) is remembered as ended - its late chunks start
+        nothing. A repeated cancel gets the same answer.
+        """
+        async with self._locks.setdefault(watch_id, asyncio.Lock()):
+            known = self._outcomes.get(watch_id, {}).get(session_id)
+            if known is not None:
+                return known[0], known[2]
+            current = self._sessions.get(watch_id)
+            if current is not None and current.session_id == session_id:
+                outcome = await current.cancel()
+                return outcome, (current.heard or "") if outcome == TOO_LATE else ""
+            self._remember(watch_id, session_id, CANCELLED, None, "")
+            return CANCELLED, ""
 
     async def _get_or_start(
         self,
@@ -437,6 +515,7 @@ class SessionManager:
         satellite: WristTalkSatellite,
         *,
         text_only: bool,
+        final: bool = False,
     ) -> CommandSession:
         current = self._sessions.get(watch_id)
         if current is not None and current.session_id == session_id:
@@ -444,6 +523,17 @@ class SessionManager:
         ended = self._ended.setdefault(watch_id, deque(maxlen=ENDED_REMEMBERED))
         if session_id in ended:
             # A late or repeated chunk of a command that has ended: never a second pipeline run
+            gone_at = self._outcomes.get(watch_id, {}).get(
+                session_id, (None, None, "")
+            )[1]
+            if final and gone_at is not None:
+                # Layer 2 gave the watch up too early: its wait after the cap is too short
+                _LOGGER.warning(
+                    "WristTalk: a command's final arrived %.1f s after the watch was considered "
+                    "gone - the command was cancelled; the wait after the cap (%.0f s) is too short",
+                    time.monotonic() - gone_at,
+                    FINAL_WAIT_SECONDS,
+                )
             raise SessionError("session_ended", 410)
         if current is not None:
             ended.append(current.session_id)
@@ -470,16 +560,41 @@ class SessionManager:
         try:
             await session.start()
         except Exception as err:
-            # ffmpeg missing or not starting: no half-started session stays to take the next chunks
-            self._forget(watch_id, session)
+            # ffmpeg missing or not starting: no half-started session stays to take the next chunks;
+            # not remembered as ended - its next chunk tries again
+            self._forget(watch_id, session, remember=False)
             _LOGGER.warning("WristTalk could not start ffmpeg for a command: %s", err)
             raise SessionError("decoder_failed", 503) from err
         return session
 
-    def _forget(self, watch_id: str, session: CommandSession) -> None:
+    def _forget(
+        self, watch_id: str, session: CommandSession, *, remember: bool = True
+    ) -> None:
         """Drops a closed (or never started) session, unless a newer one has replaced it."""
         if self._sessions.get(watch_id) is session:
             del self._sessions[watch_id]
+        if remember:
+            outcome = session.outcome
+            heard = (session.heard or "") if outcome == TOO_LATE else ""
+            self._remember(
+                watch_id, session.session_id, outcome, session.gone_at, heard
+            )
+
+    def _remember(
+        self,
+        watch_id: str,
+        session_id: str,
+        outcome: str,
+        gone_at: float | None,
+        heard: str,
+    ) -> None:
+        ended = self._ended.setdefault(watch_id, deque(maxlen=ENDED_REMEMBERED))
+        if session_id not in ended:
+            ended.append(session_id)
+        outcomes = self._outcomes.setdefault(watch_id, {})
+        outcomes[session_id] = (outcome, gone_at, heard)
+        for old in [known for known in outcomes if known not in ended]:
+            del outcomes[old]
 
     def _count_stt(self, watch_id: str, failed: bool) -> int:
         """STT failures in a row on this watch; a recognised command resets the count."""

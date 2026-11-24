@@ -292,6 +292,7 @@ class CommandView(HomeAssistantView):
                 session_id,
                 satellite,
                 text_only=request.headers.get(HEADER_TEXT_ONLY) == "1",
+                final=request.headers.get(HEADER_FINAL) == "1",
             )
             await session.feed(
                 position, body, final=request.headers.get(HEADER_FINAL) == "1"
@@ -301,6 +302,24 @@ class CommandView(HomeAssistantView):
         except SessionError as err:
             response = _error(err.code, err.status)
         return _answer(hass, request, response)
+
+
+class CancelView(HomeAssistantView):
+    """The watch's cancel (protocol 7, BACK): `cancelled` - nothing of the command runs; `too_late` -
+    the agent has it."""
+
+    url = API_BASE + "/cancel/{session_id}"
+    name = "api:wristtalk:cancel"
+    requires_auth = False
+
+    async def post(self, request: web.Request, session_id: str) -> web.Response:
+        hass: HomeAssistant = request.app["hass"]
+        data, watch, error = _watch_context(hass, request, session_id)
+        if error is not None:
+            return error
+        state, heard = await data.sessions.cancel(watch.subentry_id, session_id)
+        answer = {"state": state, "heard": heard} if heard else {"state": state}
+        return _answer(hass, request, _reply(answer))
 
 
 class ReplyView(HomeAssistantView):
@@ -391,6 +410,7 @@ def async_register_views(hass: HomeAssistant) -> None:
         PingView(),
         RepairView(),
         CommandView(),
+        CancelView(),
         ReplyView(),
         AudioView(),
         AudioPieceView(),
